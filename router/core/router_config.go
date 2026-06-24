@@ -156,8 +156,6 @@ type Config struct {
 	// lastManifestMapperHash skips manifest reload when mapper.json content is unchanged.
 	lastManifestMapperHash [32]byte
 	manifestMapperHashSeen bool
-	// lastManifestGraphHashes tracks per-graph CDN hashes from mapper.json for mux reuse.
-	lastManifestGraphHashes map[string]string
 }
 
 // Usage returns an anonymized version of the config for usage tracking
