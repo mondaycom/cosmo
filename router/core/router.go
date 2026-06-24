@@ -1108,6 +1108,14 @@ func (r *Router) bootstrap(ctx context.Context) error {
 			r.lastManifestMapperHash = hash
 			r.manifestMapperHashSeen = true
 		}
+
+		rules := routerconfig.AssembleConfigRules{
+			SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
+			IgnoredFeatureFlags:     r.manifestConfig.IgnoredFeatureFlags,
+		}
+		if graphs, graphErr := routerconfig.ReadManifestMapperGraphs(r.manifestConfig.Path, rules); graphErr == nil {
+			r.lastManifestGraphHashes = graphs
+		}
 	}
 
 	if err := r.buildClients(ctx); err != nil {
@@ -1607,6 +1615,13 @@ func (r *Router) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *Router) manifestAssembleRules() routerconfig.AssembleConfigRules {
+	return routerconfig.AssembleConfigRules{
+		SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
+		IgnoredFeatureFlags:     r.manifestConfig.IgnoredFeatureFlags,
+	}
+}
+
 func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 	r.trackExecutionConfigUsage(r.staticExecutionConfig, true)
 
@@ -1614,7 +1629,12 @@ func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 		return err
 	}
 
-	if err := r.newServer(ctx, &routerconfig.Response{Config: r.staticExecutionConfig}); err != nil {
+	_, hashes := routerconfig.ComputeGraphChangesAndHashes(nil, r.lastManifestGraphHashes)
+	if err := r.newServer(ctx, &routerconfig.Response{
+		Config:  r.staticExecutionConfig,
+		Changes: nil,
+		Hashes:  hashes,
+	}); err != nil {
 		return err
 	}
 
@@ -1739,11 +1759,17 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 				return
 			}
 
+			rules := r.manifestAssembleRules()
+			mapperGraphs, err := routerconfig.ReadManifestMapperGraphs(r.manifestConfig.Path, rules)
+			if err != nil {
+				ll.Error("Failed to read manifest mapper graphs", zap.Error(err))
+				return
+			}
+
+			changes, hashes := routerconfig.ComputeGraphChangesAndHashes(r.lastManifestGraphHashes, mapperGraphs)
+
 			cfg, err := routerconfig.AssembleStaticExecutionConfigFromManifest(
-				r.manifestConfig.Path, routerconfig.AssembleConfigRules{
-					SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
-					IgnoredFeatureFlags:     r.manifestConfig.IgnoredFeatureFlags,
-				})
+				r.manifestConfig.Path, rules)
 
 			if err != nil {
 				ll.Error("Failed to assemble static execution config from manifest", zap.Error(err))
@@ -1752,13 +1778,18 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 
 			ll.Info("Manifest config changed. Updating server with new config", zap.String("path", r.manifestConfig.Path))
 
-			if err := r.newServer(ctx, &routerconfig.Response{Config: cfg}); err != nil {
+			if err := r.newServer(ctx, &routerconfig.Response{
+				Config:  cfg,
+				Changes: changes,
+				Hashes:  hashes,
+			}); err != nil {
 				ll.Error("Failed to update server with new config", zap.Error(err))
 				return
 			}
 
 			r.lastManifestMapperHash = mapperHash
 			r.manifestMapperHashSeen = true
+			r.lastManifestGraphHashes = mapperGraphs
 
 			if old := r.staticExecutionConfig; old != nil && old != cfg {
 				proto.Reset(old)

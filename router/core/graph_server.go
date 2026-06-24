@@ -1051,7 +1051,14 @@ func (s *graphMux) Shutdown(ctx context.Context) error {
 		if aErr := s.prometheusMetricsExporter.Shutdown(ctx); aErr != nil {
 			err = errors.Join(err, aErr)
 		}
+		s.prometheusMetricsExporter = nil
 	}
+
+	s.otelCacheMetrics = nil
+	s.prometheusCacheMetrics = nil
+	s.metricStore = nil
+	s.streamMetricStore = nil
+	s.accessLogsFileLogger = nil
 
 	if err != nil {
 		return fmt.Errorf("shutdown graph mux: %w", err)
@@ -2245,7 +2252,20 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 		if err := s.connector.StopAllProviders(); err != nil {
 			finalErr = errors.Join(finalErr, err)
 		}
+		s.connector = nil
 	}
+
+	s.mux = nil
+	s.graphMuxList = nil
+	s.baseTransport = nil
+	s.subgraphTransports = nil
+	s.pubSubProviders = nil
+	s.circuitBreakerManager = nil
+	s.traceDialer = nil
+	s.runtimeMetrics = nil
+	s.otlpEngineMetrics = nil
+	s.prometheusEngineMetrics = nil
+	s.connectionMetrics = nil
 
 	return finalErr
 }
