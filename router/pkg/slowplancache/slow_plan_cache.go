@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 )
 
 // Entry holds a cached value and the duration it took to produce.
@@ -223,14 +225,12 @@ func (c *Cache[V]) Close() {
 		// it is even documented in the ristretto code as a comment
 		close(c.writeCh)
 
-		// Clear all entries to release references held by cached values (e.g.
-		// *ast.Document schema pointers). Without this, entries survive until the
-		// Cache struct itself is GC'd, which may be delayed by goroutines still
-		// referencing the owning graphMux.
-		c.entries.Range(func(key, _ any) bool {
-			c.entries.Delete(key)
-			return true
-		})
-		c.size = 0
+		if mondaytweaks.ClearSlowPlanCacheOnClose {
+			c.entries.Range(func(key, _ any) bool {
+				c.entries.Delete(key)
+				return true
+			})
+			c.size = 0
+		}
 	})
 }
