@@ -222,5 +222,15 @@ func (c *Cache[V]) Close() {
 		// This downside is also there in ristretto (if set is called concurrently)
 		// it is even documented in the ristretto code as a comment
 		close(c.writeCh)
+
+		// Clear all entries to release references held by cached values (e.g.
+		// *ast.Document schema pointers). Without this, entries survive until the
+		// Cache struct itself is GC'd, which may be delayed by goroutines still
+		// referencing the owning graphMux.
+		c.entries.Range(func(key, _ any) bool {
+			c.entries.Delete(key)
+			return true
+		})
+		c.size = 0
 	})
 }
