@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/grpcconnector"
@@ -239,12 +240,14 @@ func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Con
 		subscriptionClientOptions = &SubscriptionClientOptions{}
 	}
 	resolvedSubscriptionClientOptions := *subscriptionClientOptions
-	resolvedSubscriptionClientOptions.UseNoopClient = shouldUseNoopUpstreamSubscriptionClient(
-		opts.EngineConfig.GetGraphqlSchema(),
-		opts.EngineConfig,
-		opts.RouterEngineConfig.Events,
-		opts.WebSocketConfiguration,
-	)
+	if mondaytweaks.UseNoopUpstreamSubscriptionClientWhenUnused {
+		resolvedSubscriptionClientOptions.UseNoopClient = shouldUseNoopUpstreamSubscriptionClient(
+			opts.EngineConfig.GetGraphqlSchema(),
+			opts.EngineConfig,
+			opts.RouterEngineConfig.Events,
+			opts.WebSocketConfiguration,
+		)
+	}
 
 	loader := NewLoader(ctx, b.trackUsageInfo, NewDefaultFactoryResolver(
 		ctx,

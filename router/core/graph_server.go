@@ -23,6 +23,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/klauspost/compress/gzip"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/routerconfig"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -725,15 +726,21 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 			BufferItems:        64,
 		}
 		if srv.cacheWarmup != nil && srv.cacheWarmup.Enabled && srv.cacheWarmup.InMemoryFallback {
-			s.planCacheOnEvictEnabled.Store(true)
-			planCacheConfig.OnEvict = func(item *ristretto.Item[*planWithMetaData]) {
-				// This could be called before planFallbackCache is set, but it's not a problem
-				// because there is a nil guard inside, as well as items should not really be evicted
-				// on startup
-				if !s.planCacheOnEvictEnabled.Load() {
-					return
+			if mondaytweaks.SkipPlanCacheOnEvictDuringMuxShutdown {
+				s.planCacheOnEvictEnabled.Store(true)
+				planCacheConfig.OnEvict = func(item *ristretto.Item[*planWithMetaData]) {
+					// This could be called before planFallbackCache is set, but it's not a problem
+					// because there is a nil guard inside, as well as items should not really be evicted
+					// on startup
+					if !s.planCacheOnEvictEnabled.Load() {
+						return
+					}
+					s.planFallbackCache.Set(item.Key, item.Value, item.Value.planningDuration)
 				}
-				s.planFallbackCache.Set(item.Key, item.Value, item.Value.planningDuration)
+			} else {
+				planCacheConfig.OnEvict = func(item *ristretto.Item[*planWithMetaData]) {
+					s.planFallbackCache.Set(item.Key, item.Value, item.Value.planningDuration)
+				}
 			}
 		}
 		s.planCache, err = ristretto.NewCache[uint64, *planWithMetaData](planCacheConfig)
@@ -989,31 +996,53 @@ func (s *graphMux) releaseOperationCaches() {
 	closeRistrettoCacheUint64(&s.operationHashCache)
 }
 
+func (s *graphMux) closeOperationCachesLegacy() {
+	s.planCache.Close()
+	s.planFallbackCache.Close()
+	s.persistedOperationCache.Close()
+	s.normalizationCache.Close()
+	s.variablesNormalizationCache.Close()
+	s.remapVariablesCache.Close()
+	s.complexityCalculationCache.Close()
+	s.validationCache.Close()
+	s.operationHashCache.Close()
+}
+
 func (s *graphMux) Shutdown(ctx context.Context) error {
-	// Close websocket subscriptions synchronously before tearing down plan caches so
-	// active preparedPlan and executor references are released first.
-	if s.wsHandler != nil {
-		s.wsHandler.ShutdownConnections()
+	if mondaytweaks.DrainWebsocketSubscriptionsBeforeCacheClose {
+		// Close websocket subscriptions synchronously before tearing down plan caches so
+		// active preparedPlan and executor references are released first.
+		if s.wsHandler != nil {
+			s.wsHandler.ShutdownConnections()
+		}
 	}
 
 	// cancel the graph muxes context to close its resources like websocket connections, resolvers, etc.
 	s.cancel()
 
-	// ristretto Close() clears all entries and invokes OnEvict for each one. Disable
-	// migration into the slow-plan fallback cache during intentional mux shutdown.
-	s.planCacheOnEvictEnabled.Store(false)
-	if s.planFallbackCache != nil {
-		s.planFallbackCache.Wait()
+	if mondaytweaks.SkipPlanCacheOnEvictDuringMuxShutdown {
+		// ristretto Close() clears all entries and invokes OnEvict for each one. Disable
+		// migration into the slow-plan fallback cache during intentional mux shutdown.
+		s.planCacheOnEvictEnabled.Store(false)
+		if s.planFallbackCache != nil {
+			s.planFallbackCache.Wait()
+		}
 	}
 
-	if s.executor != nil {
-		s.executor.Close()
-		s.executor = nil
+	if mondaytweaks.CloseExecutorOnGraphMuxShutdown {
+		if s.executor != nil {
+			s.executor.Close()
+			s.executor = nil
+		}
 	}
 
-	s.releaseOperationCaches()
-	s.wsHandler = nil
-	s.mux = nil
+	if mondaytweaks.NilGraphMuxCachesOnShutdown {
+		s.releaseOperationCaches()
+		s.wsHandler = nil
+		s.mux = nil
+	} else {
+		s.closeOperationCachesLegacy()
+	}
 
 	var err error
 
@@ -1500,7 +1529,8 @@ func (s *graphServer) buildGraphMux(
 	}
 	// Client-facing WebSocket subscriptions are disabled; skip upstream ping loops
 	// that would otherwise start one goroutine per subgraph datasource factory.
-	if s.webSocketConfiguration != nil && !s.webSocketConfiguration.Enabled {
+	if mondaytweaks.DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled &&
+		s.webSocketConfiguration != nil && !s.webSocketConfiguration.Enabled {
 		subscriptionClientOptions.PingInterval = 0
 	}
 
@@ -1549,7 +1579,9 @@ func (s *graphServer) buildGraphMux(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build plan configuration: %w", err)
 	}
-	gm.executor = executor
+	if mondaytweaks.CloseExecutorOnGraphMuxShutdown {
+		gm.executor = executor
+	}
 
 	s.pubSubProviders = providers
 	if pubSubStartupErr := s.startupPubSubProviders(s.graphServerCtx); pubSubStartupErr != nil {
@@ -1903,7 +1935,9 @@ func (s *graphServer) buildGraphMux(
 			DisableVariablesRemapping: s.engineExecutionConfiguration.DisableVariablesRemapping,
 			ApolloCompatibilityFlags:  s.apolloCompatibilityFlags,
 		})
-		gm.wsHandler = wsHandler
+		if mondaytweaks.DrainWebsocketSubscriptionsBeforeCacheClose {
+			gm.wsHandler = wsHandler
+		}
 
 		// When the playground path is equal to the graphql path, we need to handle
 		// ws upgrades and html requests on the same route.
@@ -2226,7 +2260,9 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 		if err := mux.Shutdown(ctx); err != nil {
 			finalErr = errors.Join(finalErr, err)
 		}
-		delete(s.graphMuxList, name)
+		if mondaytweaks.NilGraphMuxCachesOnShutdown {
+			delete(s.graphMuxList, name)
+		}
 	}
 
 	// Close idle connections on base and subgraph transports
