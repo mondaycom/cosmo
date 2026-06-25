@@ -207,5 +207,5 @@ replace (
 	github.com/wundergraph/cosmo/router => ../router
 	github.com/wundergraph/cosmo/router-plugin => ../router-plugin
 	github.com/wundergraph/cosmo/speedtrap => ../speedtrap
-// github.com/wundergraph/graphql-go-tools/v2 => ../../graphql-go-tools/v2
+	github.com/wundergraph/graphql-go-tools/v2 => github.com/mondaycom/graphql-go-tools/v2 v2.0.0-20260625105909-aceeb0751260
 )
