@@ -55,4 +55,8 @@ const (
 	// DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled sets PingInterval=0 on
 	// upstream subscription clients when client-facing websocket is disabled.
 	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = true
+
+	// ExposeOperationSubgraphFetchCountContextField enables the
+	// operation_subgraph_fetch_count access-log context field.
+	ExposeOperationSubgraphFetchCountContextField = true
 )
