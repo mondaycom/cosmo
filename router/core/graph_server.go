@@ -718,9 +718,17 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 	// different inputs that would generate the same execution plan
 
 	if srv.engineExecutionConfiguration.ExecutionPlanCacheSize > 0 {
+		// planCacheMaxCost is the ExecutionPlanCacheSize entry count by default. When
+		// SizeAwarePlanCache is enabled the cache instead evicts by estimated retained heap
+		// (see estimatePlanCacheCost / planCacheCost), so MaxCost becomes a byte budget while
+		// NumCounters stays keyed to the expected entry count for TinyLFU admission.
+		planCacheMaxCost := srv.engineExecutionConfiguration.ExecutionPlanCacheSize
+		if mondaytweaks.SizeAwarePlanCache {
+			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes
+		}
 		planCacheConfig := &ristretto.Config[uint64, *planWithMetaData]{
 			Metrics:            srv.metricConfig.OpenTelemetry.GraphqlCache || srv.metricConfig.Prometheus.GraphqlCache,
-			MaxCost:            srv.engineExecutionConfiguration.ExecutionPlanCacheSize,
+			MaxCost:            planCacheMaxCost,
 			NumCounters:        srv.engineExecutionConfiguration.ExecutionPlanCacheSize * 10,
 			IgnoreInternalCost: true,
 			BufferItems:        64,

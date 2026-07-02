@@ -9,6 +9,7 @@ import (
 
 	graphqlmetricsv1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/graphqlmetrics/v1"
 	"github.com/wundergraph/cosmo/router/pkg/graphqlschemausage"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/slowplancache"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/astparser"
@@ -25,6 +26,53 @@ type planWithMetaData struct {
 	content                           string
 	operationName                     string
 	planningDuration                  time.Duration
+}
+
+// planCacheCostNodeBytes and planCacheCostUsageBytes approximate the average retained heap
+// of a single AST structural element and a single usage-info entry. Ristretto cost is
+// relative to MaxCost, so the constants only need to preserve ordering across cache entries;
+// they are deliberately coarse and cheap to compute.
+const (
+	planCacheCostNodeBytes  = 48
+	planCacheCostUsageBytes = 64
+)
+
+// estimatePlanCacheCost approximates the retained heap of a cached plan entry so the
+// size-aware Ristretto config (mondaytweaks.SizeAwarePlanCache) evicts by memory footprint
+// instead of by entry count. It keys off operationDocument, which is always populated (the
+// content string is only set when the slow-plan cache is enabled), summing the raw operation
+// bytes and the lengths of the operation-side AST slices — both of which scale with operation
+// complexity and therefore with the size of the prepared plan tree the entry retains. The
+// estimate is intentionally an O(number-of-slices) field read, not a deep walk.
+func estimatePlanCacheCost(p *planWithMetaData) int64 {
+	if p == nil {
+		return 1
+	}
+	cost := int64(len(p.content) + len(p.operationName))
+	if d := p.operationDocument; d != nil {
+		cost += int64(len(d.Input.RawBytes) + len(d.Input.Variables))
+		nodes := len(d.RootNodes) + len(d.Arguments) + len(d.Values) +
+			len(d.Selections) + len(d.SelectionSets) + len(d.Fields) +
+			len(d.ObjectFields) + len(d.ObjectValues) + len(d.ListValues) +
+			len(d.VariableValues) + len(d.StringValues) + len(d.IntValues) +
+			len(d.FloatValues) + len(d.EnumValues) + len(d.InlineFragments) +
+			len(d.FragmentSpreads) + len(d.VariableDefinitions) + len(d.Directives)
+		cost += int64(nodes) * planCacheCostNodeBytes
+	}
+	cost += int64(len(p.typeFieldUsageInfo)+len(p.argumentUsageInfo)) * planCacheCostUsageBytes
+	if cost < 1 {
+		return 1
+	}
+	return cost
+}
+
+// planCacheCost returns the Ristretto cost for a plan-cache entry: the size-aware estimate
+// when mondaytweaks.SizeAwarePlanCache is enabled, or the historical unit cost of 1.
+func planCacheCost(p *planWithMetaData) int64 {
+	if mondaytweaks.SizeAwarePlanCache {
+		return estimatePlanCacheCost(p)
+	}
+	return 1
 }
 
 type OperationPlanner struct {
@@ -168,7 +216,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 			// found in the plan fallback cache — re-use and re-insert into main cache
 			opContext.preparedPlan = cachedPlan
 			opContext.planCacheHit = true
-			p.planCache.Set(operationID, cachedPlan, 1)
+			p.planCache.Set(operationID, cachedPlan, planCacheCost(cachedPlan))
 		}
 	}
 
@@ -191,7 +239,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 
 			// Set into the main cache after planningDuration is finalized,
 			// because the OnEvict callback reads planningDuration concurrently.
-			p.planCache.Set(operationID, prepared, 1)
+			p.planCache.Set(operationID, prepared, planCacheCost(prepared))
 			p.slowPlanCache.Set(operationID, prepared, prepared.planningDuration)
 
 			return prepared, nil
