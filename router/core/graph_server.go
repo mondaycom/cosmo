@@ -723,7 +723,7 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 		// (see estimatePlanCacheCost / planCacheCost), so MaxCost becomes a byte budget while
 		// NumCounters stays keyed to the expected entry count for TinyLFU admission.
 		planCacheMaxCost := srv.engineExecutionConfiguration.ExecutionPlanCacheSize
-		if mondaytweaks.SizeAwarePlanCache {
+		if sizeAwarePlanCacheEnabled(srv.engineExecutionConfiguration) {
 			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes
 		}
 		planCacheConfig := &ristretto.Config[uint64, *planWithMetaData]{
@@ -1635,7 +1635,7 @@ func (s *graphServer) buildGraphMux(
 		}
 	}
 
-	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride)
+	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride, sizeAwarePlanCacheEnabled(s.engineExecutionConfiguration))
 
 	// We support the MCP only on the base graph. Feature flags are not supported yet.
 	if opts.IsBaseGraph() && s.mcpServer != nil {

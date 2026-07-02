@@ -83,5 +83,5 @@ var (
 	// intended to be enabled as a per-cluster canary (start with US cluster group 02) rather
 	// than flipped on globally. It is a var so tests can exercise both cache configurations.
 	// When false the original count-based path runs unchanged.
-	SizeAwarePlanCache = false
+	SizeAwarePlanCache = true
 )

@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	graphqlmetricsv1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/graphqlmetrics/v1"
+	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/graphqlschemausage"
 	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/slowplancache"
@@ -66,10 +67,20 @@ func estimatePlanCacheCost(p *planWithMetaData) int64 {
 	return cost
 }
 
+// sizeAwarePlanCacheEnabled reports whether the execution-plan cache should evict by estimated
+// retained heap (mondaytweaks.SizeAwarePlanCache) for this engine configuration. The per-config
+// DisableSizeAwarePlanCache override forces count-based eviction (tests, or a targeted
+// per-router rollback) without mutating the global flag, which matters under -race.
+func sizeAwarePlanCacheEnabled(cfg config.EngineExecutionConfiguration) bool {
+	return mondaytweaks.SizeAwarePlanCache && !cfg.DisableSizeAwarePlanCache
+}
+
 // planCacheCost returns the Ristretto cost for a plan-cache entry: the size-aware estimate
-// when mondaytweaks.SizeAwarePlanCache is enabled, or the historical unit cost of 1.
-func planCacheCost(p *planWithMetaData) int64 {
-	if mondaytweaks.SizeAwarePlanCache {
+// when size-aware eviction is enabled for this planner, or the historical unit cost of 1. The
+// MaxCost configured in buildOperationCaches must use the same decision so cost and budget
+// agree.
+func (op *OperationPlanner) planCacheCost(p *planWithMetaData) int64 {
+	if op.sizeAwarePlanCache {
 		return estimatePlanCacheCost(p)
 	}
 	return 1
@@ -85,6 +96,12 @@ type OperationPlanner struct {
 	// planningDurationOverride, when set, replaces the measured planning duration.
 	// This is used in tests to simulate slow queries.
 	planningDurationOverride func(content string) time.Duration
+
+	// sizeAwarePlanCache mirrors the plan cache's eviction mode: when true, plan-cache Set
+	// costs are the estimated retained heap (matching the byte budget MaxCost); when false,
+	// the historical unit cost of 1 (count-based). Kept per-planner so it agrees with the
+	// cache built for the same engine configuration.
+	sizeAwarePlanCache bool
 }
 
 type operationPlannerOpts struct {
@@ -107,6 +124,7 @@ func NewOperationPlanner(
 	planCache ExecutionPlanCache[uint64, *planWithMetaData],
 	fallbackCache *slowplancache.Cache[*planWithMetaData],
 	planningDurationOverride func(content string) time.Duration,
+	sizeAwarePlanCache bool,
 ) *OperationPlanner {
 	return &OperationPlanner{
 		planCache:                planCache,
@@ -114,6 +132,7 @@ func NewOperationPlanner(
 		trackUsageInfo:           executor.TrackUsageInfo,
 		slowPlanCache:            fallbackCache,
 		planningDurationOverride: planningDurationOverride,
+		sizeAwarePlanCache:       sizeAwarePlanCache,
 	}
 }
 
@@ -216,7 +235,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 			// found in the plan fallback cache — re-use and re-insert into main cache
 			opContext.preparedPlan = cachedPlan
 			opContext.planCacheHit = true
-			p.planCache.Set(operationID, cachedPlan, planCacheCost(cachedPlan))
+			p.planCache.Set(operationID, cachedPlan, p.planCacheCost(cachedPlan))
 		}
 	}
 
@@ -239,7 +258,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 
 			// Set into the main cache after planningDuration is finalized,
 			// because the OnEvict callback reads planningDuration concurrently.
-			p.planCache.Set(operationID, prepared, planCacheCost(prepared))
+			p.planCache.Set(operationID, prepared, p.planCacheCost(prepared))
 			p.slowPlanCache.Set(operationID, prepared, prepared.planningDuration)
 
 			return prepared, nil
