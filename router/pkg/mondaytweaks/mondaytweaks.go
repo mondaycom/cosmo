@@ -56,6 +56,10 @@ const (
 	// upstream subscription clients when client-facing websocket is disabled.
 	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = true
 
+	// ExposeOperationSubgraphFetchCountContextField enables the
+	// operation_subgraph_fetch_count access-log context field.
+	ExposeOperationSubgraphFetchCountContextField = true
+
 	// PlanCacheSizeAwareBudgetPerSlotBytes is the per-configured-slot byte budget used to
 	// derive the size-aware execution-plan-cache MaxCost when SizeAwarePlanCache is enabled.
 	// The Ristretto MaxCost becomes ExecutionPlanCacheSize * this value (bytes), and each
