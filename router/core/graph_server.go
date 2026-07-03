@@ -718,9 +718,17 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 	// different inputs that would generate the same execution plan
 
 	if srv.engineExecutionConfiguration.ExecutionPlanCacheSize > 0 {
+		// planCacheMaxCost is the ExecutionPlanCacheSize entry count by default. When
+		// SizeAwarePlanCache is enabled the cache instead evicts by estimated retained heap
+		// (see estimatePlanCacheCost / planCacheCost), so MaxCost becomes a byte budget while
+		// NumCounters stays keyed to the expected entry count for TinyLFU admission.
+		planCacheMaxCost := srv.engineExecutionConfiguration.ExecutionPlanCacheSize
+		if sizeAwarePlanCacheEnabled(srv.engineExecutionConfiguration) {
+			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes
+		}
 		planCacheConfig := &ristretto.Config[uint64, *planWithMetaData]{
 			Metrics:            srv.metricConfig.OpenTelemetry.GraphqlCache || srv.metricConfig.Prometheus.GraphqlCache,
-			MaxCost:            srv.engineExecutionConfiguration.ExecutionPlanCacheSize,
+			MaxCost:            planCacheMaxCost,
 			NumCounters:        srv.engineExecutionConfiguration.ExecutionPlanCacheSize * 10,
 			IgnoreInternalCost: true,
 			BufferItems:        64,
@@ -1627,7 +1635,7 @@ func (s *graphServer) buildGraphMux(
 		}
 	}
 
-	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride)
+	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride, sizeAwarePlanCacheEnabled(s.engineExecutionConfiguration))
 
 	// We support the MCP only on the base graph. Feature flags are not supported yet.
 	if opts.IsBaseGraph() && s.mcpServer != nil {

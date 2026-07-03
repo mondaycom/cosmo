@@ -69,6 +69,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 100
 			},
@@ -98,6 +99,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 100
 			},
@@ -137,6 +139,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 100
 			},
@@ -261,6 +264,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 100
 			},
@@ -316,6 +320,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 10
 			},
@@ -344,6 +349,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = fallbackThreshold
 				cfg.SlowPlanCacheSize = 50
 			},
@@ -431,6 +437,7 @@ func TestPlanFallbackCache(t *testing.T) {
 		testenv.Run(t, &testenv.Config{
 			ModifyEngineExecutionConfiguration: func(cfg *config.EngineExecutionConfiguration) {
 				cfg.ExecutionPlanCacheSize = 1
+				cfg.DisableSizeAwarePlanCache = true // count-based eviction: this suite tests the fallback trigger, not size-aware eviction
 				cfg.SlowPlanCacheThreshold = 1 * time.Hour
 				cfg.SlowPlanCacheSize = 100
 			},

@@ -59,4 +59,34 @@ const (
 	// ExposeOperationSubgraphFetchCountContextField enables the
 	// operation_subgraph_fetch_count access-log context field.
 	ExposeOperationSubgraphFetchCountContextField = true
+
+	// PlanCacheSizeAwareBudgetPerSlotBytes is the per-configured-slot byte budget used to
+	// derive the size-aware execution-plan-cache MaxCost when SizeAwarePlanCache is enabled.
+	// The Ristretto MaxCost becomes ExecutionPlanCacheSize * this value (bytes), and each
+	// entry is charged its estimated retained heap (see estimatePlanCacheCost). With the
+	// historical count-based config a single giant aliased-batch plan occupied one of N
+	// slots regardless of its true size, so a burst of structurally-unique giant plans (US
+	// cluster group 02) could pin far more heap than the operator budgeted for. 8 KiB/slot
+	// keeps normal-traffic capacity roughly unchanged (typical plans estimate well under
+	// this) while charging a 200 KB+ giant plan tens of slots, and — crucially — bounds the
+	// total plan-cache heap to a predictable ceiling instead of (entry count x worst case).
+	PlanCacheSizeAwareBudgetPerSlotBytes int64 = 8 * 1024
+)
+
+var (
+	// SizeAwarePlanCache switches the execution-plan Ristretto cache from count-based
+	// eviction (every entry costs 1, MaxCost = ExecutionPlanCacheSize) to size-aware
+	// eviction (each entry costs its estimated retained heap, MaxCost =
+	// ExecutionPlanCacheSize * PlanCacheSizeAwareBudgetPerSlotBytes). This targets the RSS
+	// gap on US cluster group 02, where structurally-unique aliased-batch mutation plans are
+	// far larger than typical plans yet, under count-based eviction, could evict thousands of
+	// small hot plans while collectively pinning most of the heap.
+	//
+	// Unlike the behaviour-preserving fixes above, this materially changes cache eviction
+	// semantics and the plan-cache heap ceiling for every request. It defaults ON so the
+	// size-aware heap ceiling applies fleet-wide; an individual instance can opt back out to
+	// the original count-based eviction via EngineExecutionConfiguration.DisableSizeAwarePlanCache
+	// (used by tests that rely on count-based single-entry eviction). It is a var so tests can
+	// exercise both cache configurations. When false the original count-based path runs unchanged.
+	SizeAwarePlanCache = true
 )
