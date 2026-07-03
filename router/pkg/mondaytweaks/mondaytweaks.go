@@ -79,9 +79,10 @@ var (
 	// small hot plans while collectively pinning most of the heap.
 	//
 	// Unlike the behaviour-preserving fixes above, this materially changes cache eviction
-	// semantics and the plan-cache heap ceiling for every request, so it defaults OFF and is
-	// intended to be enabled as a per-cluster canary (start with US cluster group 02) rather
-	// than flipped on globally. It is a var so tests can exercise both cache configurations.
-	// When false the original count-based path runs unchanged.
+	// semantics and the plan-cache heap ceiling for every request. It defaults ON so the
+	// size-aware heap ceiling applies fleet-wide; an individual instance can opt back out to
+	// the original count-based eviction via EngineExecutionConfiguration.DisableSizeAwarePlanCache
+	// (used by tests that rely on count-based single-entry eviction). It is a var so tests can
+	// exercise both cache configurations. When false the original count-based path runs unchanged.
 	SizeAwarePlanCache = true
 )
