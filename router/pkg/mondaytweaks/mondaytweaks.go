@@ -55,4 +55,33 @@ const (
 	// DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled sets PingInterval=0 on
 	// upstream subscription clients when client-facing websocket is disabled.
 	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = true
+
+	// PlanCacheSizeAwareBudgetPerSlotBytes is the per-configured-slot byte budget used to
+	// derive the size-aware execution-plan-cache MaxCost when SizeAwarePlanCache is enabled.
+	// The Ristretto MaxCost becomes ExecutionPlanCacheSize * this value (bytes), and each
+	// entry is charged its estimated retained heap (see estimatePlanCacheCost). With the
+	// historical count-based config a single giant aliased-batch plan occupied one of N
+	// slots regardless of its true size, so a burst of structurally-unique giant plans (US
+	// cluster group 02) could pin far more heap than the operator budgeted for. 8 KiB/slot
+	// keeps normal-traffic capacity roughly unchanged (typical plans estimate well under
+	// this) while charging a 200 KB+ giant plan tens of slots, and — crucially — bounds the
+	// total plan-cache heap to a predictable ceiling instead of (entry count x worst case).
+	PlanCacheSizeAwareBudgetPerSlotBytes int64 = 8 * 1024
+)
+
+var (
+	// SizeAwarePlanCache switches the execution-plan Ristretto cache from count-based
+	// eviction (every entry costs 1, MaxCost = ExecutionPlanCacheSize) to size-aware
+	// eviction (each entry costs its estimated retained heap, MaxCost =
+	// ExecutionPlanCacheSize * PlanCacheSizeAwareBudgetPerSlotBytes). This targets the RSS
+	// gap on US cluster group 02, where structurally-unique aliased-batch mutation plans are
+	// far larger than typical plans yet, under count-based eviction, could evict thousands of
+	// small hot plans while collectively pinning most of the heap.
+	//
+	// Unlike the behaviour-preserving fixes above, this materially changes cache eviction
+	// semantics and the plan-cache heap ceiling for every request, so it defaults OFF and is
+	// intended to be enabled as a per-cluster canary (start with US cluster group 02) rather
+	// than flipped on globally. It is a var so tests can exercise both cache configurations.
+	// When false the original count-based path runs unchanged.
+	SizeAwarePlanCache = true
 )
