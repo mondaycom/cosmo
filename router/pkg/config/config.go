@@ -462,6 +462,11 @@ type EngineExecutionConfiguration struct {
 	MaxConcurrentResolvers                           int           `envDefault:"1024" env:"ENGINE_MAX_CONCURRENT_RESOLVERS" yaml:"max_concurrent_resolvers,omitempty"`
 	EnableNetPoll                                    bool          `envDefault:"true" env:"ENGINE_ENABLE_NET_POLL" yaml:"enable_net_poll"`
 	ExecutionPlanCacheSize                           int64         `envDefault:"1024" env:"ENGINE_EXECUTION_PLAN_CACHE_SIZE" yaml:"execution_plan_cache_size,omitempty"`
+	// DisableSizeAwarePlanCache forces the execution-plan cache back to count-based eviction
+	// even when mondaytweaks.SizeAwarePlanCache is enabled. It is set programmatically (tests,
+	// or a targeted per-router rollback) and has no env/yaml binding; production leaves it
+	// false and follows the mondaytweaks default. See mondaytweaks.SizeAwarePlanCache.
+	DisableSizeAwarePlanCache bool `yaml:"-"`
 	SlowPlanCacheSize                                int64         `envDefault:"300" env:"ENGINE_SLOW_PLAN_CACHE_SIZE" yaml:"slow_plan_cache_size,omitempty"`
 	SlowPlanCacheThreshold                           time.Duration `envDefault:"100ms" env:"ENGINE_SLOW_PLAN_CACHE_THRESHOLD" yaml:"slow_plan_cache_threshold,omitempty"`
 	MinifySubgraphOperations                         bool          `envDefault:"true" env:"ENGINE_MINIFY_SUBGRAPH_OPERATIONS" yaml:"minify_subgraph_operations"`

@@ -10,4 +10,83 @@ const (
 	// struct itself is GC'd — which may be delayed by goroutines still referencing
 	// the owning graphMux — causing ~200-300 MB of retained memory per config reload.
 	ClearSlowPlanCacheOnClose = true
+
+	// OmitSchemaDocumentFromCachedPlans removes the unused schemaDocument field from
+	// planWithMetaData (compile-time structural change in operation_planner.go).
+	OmitSchemaDocumentFromCachedPlans = true
+
+	// CallOnRouterConfigReloadOnHotReload invokes ReloadPersistentState.OnRouterConfigReload
+	// at the start of Router.newServer(), matching the supervisor restart path.
+	CallOnRouterConfigReloadOnHotReload = true
+
+	// SkipPlanCacheOnEvictDuringMuxShutdown disables ristretto OnEvict migration into
+	// slowplancache while a graphMux is shutting down intentionally.
+	SkipPlanCacheOnEvictDuringMuxShutdown = true
+
+	// DrainWebsocketSubscriptionsBeforeCacheClose closes client websocket subscriptions
+	// synchronously before plan caches are torn down on graphMux shutdown.
+	DrainWebsocketSubscriptionsBeforeCacheClose = true
+
+	// CloseExecutorOnGraphMuxShutdown nils federation schema refs held by Executor after
+	// graphMux drain, allowing the old graph generation to be garbage-collected.
+	CloseExecutorOnGraphMuxShutdown = true
+
+	// NilGraphMuxCachesOnShutdown closes and nils Ristretto caches on shut-down graphMux,
+	// drops wsHandler/mux references, and removes the mux from graphMuxList.
+	NilGraphMuxCachesOnShutdown = true
+
+	// ResetExecutionConfigProtoOnReload proto.Resets the previous staticExecutionConfig
+	// after a successful manifest reload so decoded protojson strings can be collected.
+	ResetExecutionConfigProtoOnReload = true
+
+	// SkipManifestReloadWhenMapperUnchanged skips manifest watcher reload when mapper.json
+	// bytes are unchanged. Disabled: latest.json / feature-flag files can change without
+	// mapper.json changing, which would serve stale config.
+	SkipManifestReloadWhenMapperUnchanged = false
+
+	// ShareUpstreamSubscriptionClient uses one upstream GraphQLSubscriptionClient per
+	// DefaultFactoryResolver instead of one per subgraph factory (behavior-altering).
+	ShareUpstreamSubscriptionClient = true
+
+	// UseNoopUpstreamSubscriptionClientWhenUnused skips upstream WS/SSE transport init
+	// when subscriptions are not used (behavior-altering).
+	UseNoopUpstreamSubscriptionClientWhenUnused = true
+
+	// DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled sets PingInterval=0 on
+	// upstream subscription clients when client-facing websocket is disabled.
+	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = true
+
+	// ExposeOperationSubgraphFetchCountContextField enables the
+	// operation_subgraph_fetch_count access-log context field.
+	ExposeOperationSubgraphFetchCountContextField = true
+
+	// PlanCacheSizeAwareBudgetPerSlotBytes is the per-configured-slot byte budget used to
+	// derive the size-aware execution-plan-cache MaxCost when SizeAwarePlanCache is enabled.
+	// The Ristretto MaxCost becomes ExecutionPlanCacheSize * this value (bytes), and each
+	// entry is charged its estimated retained heap (see estimatePlanCacheCost). With the
+	// historical count-based config a single giant aliased-batch plan occupied one of N
+	// slots regardless of its true size, so a burst of structurally-unique giant plans (US
+	// cluster group 02) could pin far more heap than the operator budgeted for. 8 KiB/slot
+	// keeps normal-traffic capacity roughly unchanged (typical plans estimate well under
+	// this) while charging a 200 KB+ giant plan tens of slots, and — crucially — bounds the
+	// total plan-cache heap to a predictable ceiling instead of (entry count x worst case).
+	PlanCacheSizeAwareBudgetPerSlotBytes int64 = 8 * 1024
+)
+
+var (
+	// SizeAwarePlanCache switches the execution-plan Ristretto cache from count-based
+	// eviction (every entry costs 1, MaxCost = ExecutionPlanCacheSize) to size-aware
+	// eviction (each entry costs its estimated retained heap, MaxCost =
+	// ExecutionPlanCacheSize * PlanCacheSizeAwareBudgetPerSlotBytes). This targets the RSS
+	// gap on US cluster group 02, where structurally-unique aliased-batch mutation plans are
+	// far larger than typical plans yet, under count-based eviction, could evict thousands of
+	// small hot plans while collectively pinning most of the heap.
+	//
+	// Unlike the behaviour-preserving fixes above, this materially changes cache eviction
+	// semantics and the plan-cache heap ceiling for every request. It defaults ON so the
+	// size-aware heap ceiling applies fleet-wide; an individual instance can opt back out to
+	// the original count-based eviction via EngineExecutionConfiguration.DisableSizeAwarePlanCache
+	// (used by tests that rely on count-based single-entry eviction). It is a var so tests can
+	// exercise both cache configurations. When false the original count-based path runs unchanged.
+	SizeAwarePlanCache = true
 )

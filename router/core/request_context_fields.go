@@ -14,27 +14,29 @@ import (
 	"github.com/wundergraph/cosmo/router/internal/requestlogger"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/logging"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 // Context field names used to expose information about the operation being executed.
 const (
-	ContextFieldOperationName              = "operation_name"
-	ContextFieldOperationHash              = "operation_hash"
-	ContextFieldOperationType              = "operation_type"
-	ContextFieldOperationServices          = "operation_service_names"
-	ContextFieldGraphQLErrorCodes          = "graphql_error_codes"
-	ContextFieldGraphQLErrorServices       = "graphql_error_service_names"
-	ContextFieldOperationParsingTime       = "operation_parsing_time"
-	ContextFieldOperationValidationTime    = "operation_validation_time"
-	ContextFieldOperationPlanningTime      = "operation_planning_time"
-	ContextFieldOperationNormalizationTime = "operation_normalization_time"
-	ContextFieldPersistedOperationSha256   = "persisted_operation_sha256"
-	ContextFieldOperationSha256            = "operation_sha256"
-	ContextFieldResponseErrorMessage       = "response_error_message"
-	ContextFieldRequestError               = "request_error"
-	ContextFieldRouterConfigVersion        = "router_config_version"
+	ContextFieldOperationName               = "operation_name"
+	ContextFieldOperationHash               = "operation_hash"
+	ContextFieldOperationType               = "operation_type"
+	ContextFieldOperationServices           = "operation_service_names"
+	ContextFieldGraphQLErrorCodes           = "graphql_error_codes"
+	ContextFieldGraphQLErrorServices        = "graphql_error_service_names"
+	ContextFieldOperationParsingTime        = "operation_parsing_time"
+	ContextFieldOperationValidationTime     = "operation_validation_time"
+	ContextFieldOperationPlanningTime       = "operation_planning_time"
+	ContextFieldOperationSubgraphFetchCount = "operation_subgraph_fetch_count"
+	ContextFieldOperationNormalizationTime  = "operation_normalization_time"
+	ContextFieldPersistedOperationSha256    = "persisted_operation_sha256"
+	ContextFieldOperationSha256             = "operation_sha256"
+	ContextFieldResponseErrorMessage        = "response_error_message"
+	ContextFieldRequestError                = "request_error"
+	ContextFieldRouterConfigVersion         = "router_config_version"
 )
 
 // Helper functions to create zap fields for custom attributes.
@@ -69,6 +71,13 @@ func NewStringLogField(val string, attribute config.CustomAttribute) zap.Field {
 func NewBoolLogField(val bool, attribute config.CustomAttribute) zap.Field {
 	if val {
 		return zap.Bool(attribute.Key, val)
+	}
+	return zap.Skip()
+}
+
+func NewIntLogField(val int, attribute config.CustomAttribute) zap.Field {
+	if val != 0 {
+		return zap.Int(attribute.Key, val)
 	}
 	return zap.Skip()
 }
@@ -205,6 +214,8 @@ func GetLogFieldFromCustomAttribute(field config.CustomAttribute, req *requestCo
 		return NewStringLogField(v, field)
 	case bool:
 		return NewBoolLogField(v, field)
+	case int:
+		return NewIntLogField(v, field)
 	case []string:
 		return NewStringSliceLogField(v, field)
 	case time.Duration:
@@ -251,6 +262,15 @@ func getCustomDynamicAttributeValue(
 			return ""
 		}
 		return reqContext.operation.planningTime
+	case ContextFieldOperationSubgraphFetchCount:
+		if !mondaytweaks.ExposeOperationSubgraphFetchCountContextField || reqContext.operation == nil {
+			return ""
+		}
+		stats, statsErr := reqContext.operation.QueryPlanStats()
+		if statsErr != nil {
+			return ""
+		}
+		return stats.TotalSubgraphFetches
 	case ContextFieldOperationNormalizationTime:
 		if reqContext.operation == nil {
 			return ""

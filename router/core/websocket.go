@@ -71,7 +71,7 @@ type WebsocketMiddlewareOptions struct {
 	ApolloCompatibilityFlags config.ApolloCompatibilityFlags
 }
 
-func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) func(http.Handler) http.Handler {
+func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) (func(http.Handler) http.Handler, *WebsocketHandler) {
 	handler := &WebsocketHandler{
 		ctx:                       ctx,
 		operationProcessor:        opts.OperationProcessor,
@@ -149,7 +149,19 @@ func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions
 			}
 			handler.handleUpgradeRequest(w, r)
 		})
+	}, handler
+}
+
+// ShutdownConnections closes all active websocket connections and unsubscribes
+// any live GraphQL subscriptions before graph mux caches are torn down. It blocks
+// until every sync connection-handler goroutine has returned so executor.Resolver
+// is not read concurrently with executor.Close during graphMux shutdown.
+func (h *WebsocketHandler) ShutdownConnections() {
+	if h == nil {
+		return
 	}
+	h.closeAllConnections()
+	h.closeSyncConnectionsAndWait()
 }
 
 // wsConnectionWrapper is a wrapper around websocket.Conn that allows
@@ -252,6 +264,14 @@ type WebsocketHandler struct {
 	netPoll       netpoll.Poller
 	connections   map[int]*WebSocketConnectionHandler
 	connectionsMu sync.RWMutex
+
+	// syncHandlers tracks connections handled by handleConnectionSync goroutines (used
+	// when netpoll is unavailable). ShutdownConnections closes them and waits on
+	// syncHandlersWg so every handler goroutine returns before graphMux tears down
+	// executor.Resolver.
+	syncHandlers   map[*WebSocketConnectionHandler]struct{}
+	syncHandlersMu sync.Mutex
+	syncHandlersWg sync.WaitGroup
 
 	stats statistics.EngineStatistics
 
@@ -445,7 +465,23 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 
 	// Handle messages sync when net poller implementation is not available
 
-	go h.handleConnectionSync(handler)
+	h.syncHandlersMu.Lock()
+	if h.syncHandlers == nil {
+		h.syncHandlers = make(map[*WebSocketConnectionHandler]struct{})
+	}
+	h.syncHandlers[handler] = struct{}{}
+	h.syncHandlersMu.Unlock()
+
+	h.syncHandlersWg.Add(1)
+	go func() {
+		defer h.syncHandlersWg.Done()
+		defer func() {
+			h.syncHandlersMu.Lock()
+			delete(h.syncHandlers, handler)
+			h.syncHandlersMu.Unlock()
+		}()
+		h.handleConnectionSync(handler)
+	}()
 }
 
 func (h *WebsocketHandler) handleConnectionSync(handler *WebSocketConnectionHandler) {
@@ -611,6 +647,21 @@ func (h *WebsocketHandler) closeAllConnections() {
 		h.stats.ConnectionsDec()
 		handler.Close(true, wsproto.CloseKindGoingAway)
 	}
+}
+
+func (h *WebsocketHandler) closeSyncConnectionsAndWait() {
+	h.syncHandlersMu.Lock()
+	handlers := make([]*WebSocketConnectionHandler, 0, len(h.syncHandlers))
+	for handler := range h.syncHandlers {
+		handlers = append(handlers, handler)
+	}
+	h.syncHandlersMu.Unlock()
+
+	for _, handler := range handlers {
+		handler.Close(true, wsproto.CloseKindGoingAway)
+	}
+
+	h.syncHandlersWg.Wait()
 }
 
 type websocketResponseWriter struct {
@@ -811,6 +862,8 @@ type WebSocketConnectionHandler struct {
 	apolloCompatibilityFlags config.ApolloCompatibilityFlags
 
 	clientInfoFromInitialPayload config.WebSocketClientInfoFromInitialPayloadConfiguration
+
+	closeOnce sync.Once
 }
 
 type forwardConfig struct {
@@ -1374,19 +1427,21 @@ func (h *WebSocketConnectionHandler) shouldComputeOperationSha256(operationKit *
 }
 
 func (h *WebSocketConnectionHandler) Close(unsubscribe bool, closeKind wsproto.CloseKind) {
-	if unsubscribe {
-		// Remove any pending IDs associated with this connection
-		err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
-		if err != nil {
-			h.logger.Debug("Unsubscribing client", zap.Error(err))
+	h.closeOnce.Do(func() {
+		if unsubscribe {
+			// Remove any pending IDs associated with this connection
+			err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
+			if err != nil {
+				h.logger.Debug("Unsubscribing client", zap.Error(err))
+			}
 		}
-	}
 
-	if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
-		h.logger.Debug("Writing close frame", zap.Error(err))
-	}
+		if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
+			h.logger.Debug("Writing close frame", zap.Error(err))
+		}
 
-	if err := h.conn.Close(); err != nil {
-		h.logger.Debug("Closing websocket connection", zap.Error(err))
-	}
+		if err := h.conn.Close(); err != nil {
+			h.logger.Debug("Closing websocket connection", zap.Error(err))
+		}
+	})
 }
