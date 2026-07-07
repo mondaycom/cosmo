@@ -471,6 +471,7 @@
     "MaxConcurrentResolvers": 1024,
     "EnableNetPoll": true,
     "ExecutionPlanCacheSize": 1024,
+    "DisableSizeAwarePlanCache": false,
     "SlowPlanCacheSize": 300,
     "SlowPlanCacheThreshold": 100000000,
     "MinifySubgraphOperations": true,
