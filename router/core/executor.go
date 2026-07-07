@@ -8,10 +8,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/grpcconnector"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	pubsub_datasource "github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
@@ -50,19 +50,6 @@ type Executor struct {
 	Resolver        *resolve.Resolver
 	RenameTypeNames []resolve.RenameTypeName
 	TrackUsageInfo  bool
-}
-
-// Close releases schema and planner references held by the executor so a replaced
-// graph mux can be garbage-collected after config reload.
-func (e *Executor) Close() {
-	if e == nil {
-		return
-	}
-	e.ClientSchema = nil
-	e.RouterSchema = nil
-	e.PlanConfig = plan.Configuration{}
-	e.RenameTypeNames = nil
-	e.Resolver = nil
 }
 
 type ExecutorBuildOptions struct {

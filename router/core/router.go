@@ -19,7 +19,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/mitchellh/mapstructure"
 	"github.com/nats-io/nuid"
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/routerconfig"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -28,7 +27,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/graphqlmetrics/v1/graphqlmetricsv1connect"
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
@@ -629,12 +627,6 @@ func (r *Router) serverTLSConfig() (*tls.Config, error) {
 
 // newGraphServer creates a new server.
 func (r *Router) newServer(ctx context.Context, response *routerconfig.Response) error {
-	// Extract slow-plan cache entries before building the new graph server, which
-	// overwrites ReloadPersistentState cache references and before the old graphMux shuts down.
-	if mondaytweaks.CallOnRouterConfigReloadOnHotReload {
-		r.reloadPersistentState.OnRouterConfigReload()
-	}
-
 	server, err := newGraphServer(ctx, r, response, r.proxy)
 	if err != nil {
 		r.logger.Error("Failed to create graph server. Keeping the old server", zap.Error(err))
@@ -1114,11 +1106,6 @@ func (r *Router) bootstrap(ctx context.Context) error {
 		}
 
 		r.staticExecutionConfig = executionConfig
-
-		if hash, hashErr := routerconfig.ManifestMapperSHA256(r.manifestConfig.Path); hashErr == nil && mondaytweaks.SkipManifestReloadWhenMapperUnchanged {
-			r.lastManifestMapperHash = hash
-			r.manifestMapperHashSeen = true
-		}
 	}
 
 	if err := r.buildClients(ctx); err != nil {
@@ -1738,20 +1725,6 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 				return
 			}
 
-			if mondaytweaks.SkipManifestReloadWhenMapperUnchanged {
-				mapperHash, err := routerconfig.ManifestMapperSHA256(r.manifestConfig.Path)
-				if err != nil {
-					ll.Error("Failed to hash manifest mapper", zap.Error(err))
-					return
-				}
-
-				if r.manifestMapperHashSeen && mapperHash == r.lastManifestMapperHash {
-					ll.Debug("Manifest mapper unchanged, skipping reload",
-						zap.String("path", r.manifestConfig.Path))
-					return
-				}
-			}
-
 			cfg, err := routerconfig.AssembleStaticExecutionConfigFromManifest(
 				r.manifestConfig.Path, routerconfig.AssembleConfigRules{
 					SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
@@ -1768,22 +1741,6 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 			if err := r.newServer(ctx, &routerconfig.Response{Config: cfg}); err != nil {
 				ll.Error("Failed to update server with new config", zap.Error(err))
 				return
-			}
-
-			if mondaytweaks.SkipManifestReloadWhenMapperUnchanged {
-				mapperHash, err := routerconfig.ManifestMapperSHA256(r.manifestConfig.Path)
-				if err != nil {
-					ll.Error("Failed to hash manifest mapper", zap.Error(err))
-					return
-				}
-				r.lastManifestMapperHash = mapperHash
-				r.manifestMapperHashSeen = true
-			}
-
-			if mondaytweaks.ResetExecutionConfigProtoOnReload {
-				if old := r.staticExecutionConfig; old != nil && old != cfg {
-					proto.Reset(old)
-				}
 			}
 			r.staticExecutionConfig = cfg
 			r.trackExecutionConfigUsage(cfg, true)

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 )
 
 // Entry holds a cached value and the duration it took to produce.
@@ -224,13 +222,5 @@ func (c *Cache[V]) Close() {
 		// This downside is also there in ristretto (if set is called concurrently)
 		// it is even documented in the ristretto code as a comment
 		close(c.writeCh)
-
-		if mondaytweaks.ClearSlowPlanCacheOnClose {
-			c.entries.Range(func(key, _ any) bool {
-				c.entries.Delete(key)
-				return true
-			})
-			c.size = 0
-		}
 	})
 }
