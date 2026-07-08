@@ -7,15 +7,21 @@ package mondaytweaks
 const (
 	// ShareUpstreamSubscriptionClient uses one upstream GraphQLSubscriptionClient per
 	// DefaultFactoryResolver instead of one per subgraph factory (behavior-altering).
-	ShareUpstreamSubscriptionClient = true
+	// Disabled: suspected of interfering with CDN config hot reload (subscription-client
+	// lifecycle across reloads). Reverts to upstream default (one client per factory).
+	ShareUpstreamSubscriptionClient = false
 
 	// UseNoopUpstreamSubscriptionClientWhenUnused skips upstream WS/SSE transport init
 	// when subscriptions are not used (behavior-altering).
-	UseNoopUpstreamSubscriptionClientWhenUnused = true
+	// Disabled: suspected of interfering with CDN config hot reload (stale noop client
+	// after a reload that newly requires subscriptions). Reverts to upstream default.
+	UseNoopUpstreamSubscriptionClientWhenUnused = false
 
 	// DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled sets PingInterval=0 on
 	// upstream subscription clients when client-facing websocket is disabled.
-	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = true
+	// Disabled: suspected of interfering with CDN config hot reload. Reverts to upstream
+	// default ping behavior.
+	DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled = false
 
 	// ExposeOperationSubgraphFetchCountContextField enables the
 	// operation_subgraph_fetch_count access-log context field.
