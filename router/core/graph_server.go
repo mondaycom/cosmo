@@ -2208,6 +2208,25 @@ func (s *graphServer) wait(ctx context.Context) error {
 // providers during graph server shutdown.
 const metricsFlushTimeout = 30 * time.Second
 
+func monitor(fn func(elapsed time.Duration)) (stop func()) {
+	start := time.Now()
+
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.Tick(10 * time.Second):
+				fn(time.Since(start))
+			}
+		}
+	}()
+
+	return func() { close(done) }
+}
+
 // flushMeterProviders flushes the OTLP and Prometheus meter providers once. These
 // providers are shared by every metric store (request, connection, stream,
 // engine, runtime), so a single flush drains all of their metrics.
@@ -2250,11 +2269,31 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 
 	var finalErr error
 
+	// The swap path calls Shutdown synchronously from the config poller loop, so a
+	// step that cannot finish silently freezes config updates. Each step below is
+	// wrapped in a stall log that fires periodically for as long as the step runs,
+	// so a stuck shutdown names the step while it is still profilable.
+	shutdownStart := time.Now()
+
+	defer func() {
+		s.logger.Info("Graph server shutdown complete",
+			zap.String("elapsed", time.Since(shutdownStart).String()),
+			zap.String("config_version", s.baseRouterConfigVersion),
+		)
+	}()
+
 	// Wait for all in-flight requests to finish.
 	// In the worst case, we wait until the context is done or all requests has timed out.
+	cancelMonitor := monitor(func(elapsed time.Duration) {
+		s.logger.Warn("Graph server shutdown is taking a while",
+			zap.String("step", "in-flight request drain"),
+			zap.String("step_elapsed", elapsed.String()),
+		)
+	})
 	if err := s.wait(ctx); err != nil {
 		finalErr = errors.Join(finalErr, fmt.Errorf("failed to wait for in-flight requests: %w", err))
 	}
+	cancelMonitor()
 
 	s.logger.Debug("Shutdown of graph server resources",
 		zap.String("grace_period", s.routerGracePeriod.String()),
@@ -2265,11 +2304,18 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 	// before tearing down the individual metric stores.
 	// As all the stores share the same meter providers, we only need to flush once
 	// before initiating the shutdown of the individual stores.
+	cancelMonitor = monitor(func(elapsed time.Duration) {
+		s.logger.Warn("Graph server shutdown is taking a while",
+			zap.String("step", "metrics flush"),
+			zap.String("step_elapsed", elapsed.String()),
+		)
+	})
 	flushCtx, flushCancel := context.WithTimeout(ctx, metricsFlushTimeout)
 	if err := s.flushMeterProviders(flushCtx); err != nil {
 		finalErr = errors.Join(finalErr, fmt.Errorf("failed to flush metrics: %w", err))
 	}
 	flushCancel()
+	cancelMonitor()
 
 	// Ensure that we don't wait indefinitely for shutdown
 	if s.routerGracePeriod > 0 {
@@ -2278,6 +2324,13 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 
 		ctx = newCtx
 	}
+
+	cancelMonitor = monitor(func(elapsed time.Duration) {
+		s.logger.Warn("Graph server shutdown is taking a while",
+			zap.String("step", "metric stores shutdown"),
+			zap.String("step_elapsed", elapsed.String()),
+		)
+	})
 
 	if s.runtimeMetrics != nil {
 		if err := s.runtimeMetrics.Shutdown(); err != nil {
@@ -2303,6 +2356,15 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	cancelMonitor()
+
+	cancelMonitor = monitor(func(elapsed time.Duration) {
+		s.logger.Warn("Graph server shutdown is taking a while",
+			zap.String("step", "graph mux shutdown"),
+			zap.String("step_elapsed", elapsed.String()),
+		)
+	})
+
 	// Shutdown graphs muxes, which are not reused by the next graph server, to release resources
 	// e.g. planner cache
 	s.graphMuxListLock.Lock()
@@ -2320,6 +2382,8 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	cancelMonitor()
+
 	// Close idle connections on base and subgraph transports
 	s.baseTransport.CloseIdleConnections()
 	for _, subgraphTransport := range s.subgraphTransports {
@@ -2327,10 +2391,19 @@ func (s *graphServer) Shutdown(ctx context.Context) error {
 	}
 
 	if s.connector != nil {
+		cancelMonitor = monitor(func(elapsed time.Duration) {
+			s.logger.Warn("Graph server shutdown is taking a while",
+				zap.String("step", "plugin shutdown"),
+				zap.String("step_elapsed", elapsed.String()),
+			)
+		})
+
 		s.logger.Debug("Stopping old plugins")
 		if err := s.connector.StopAllProviders(); err != nil {
 			finalErr = errors.Join(finalErr, err)
 		}
+
+		cancelMonitor()
 	}
 
 	return finalErr
