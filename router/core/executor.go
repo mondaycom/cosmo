@@ -231,7 +231,7 @@ func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Con
 		subscriptionClientOptions = &SubscriptionClientOptions{}
 	}
 	resolvedSubscriptionClientOptions := *subscriptionClientOptions
-	if mondaytweaks.UseNoopUpstreamSubscriptionClientWhenUnused {
+	if mondaytweaks.UseNoopUpstreamSubscriptionClientWhenUnused.Load() {
 		resolvedSubscriptionClientOptions.UseNoopClient = shouldUseNoopUpstreamSubscriptionClient(
 			opts.EngineConfig.GetGraphqlSchema(),
 			opts.EngineConfig,

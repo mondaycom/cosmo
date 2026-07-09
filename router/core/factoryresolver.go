@@ -210,7 +210,7 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 }
 
 func (d *DefaultFactoryResolver) subscriptionClientForFactory() graphql_datasource.GraphQLSubscriptionClient {
-	if mondaytweaks.ShareUpstreamSubscriptionClient {
+	if mondaytweaks.ShareUpstreamSubscriptionClient.Load() {
 		return d.sharedSubscriptionClient()
 	}
 	return d.newSubscriptionClient()

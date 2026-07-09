@@ -199,7 +199,7 @@ func TestAccessLogsFieldHandler(t *testing.T) {
 	t.Run("logs operation subgraph fetch count when monday tweak is enabled", func(t *testing.T) {
 		t.Parallel()
 
-		require.True(t, mondaytweaks.ExposeOperationSubgraphFetchCountContextField)
+		require.True(t, mondaytweaks.ExposeOperationSubgraphFetchCountContextField.Load())
 
 		req, err := http.NewRequest(http.MethodPost, "http://localhost:3002/graphql", nil)
 		require.NoError(t, err)

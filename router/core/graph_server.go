@@ -741,7 +741,7 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 		// NumCounters stays keyed to the expected entry count for TinyLFU admission.
 		planCacheMaxCost := srv.engineExecutionConfiguration.ExecutionPlanCacheSize
 		if sizeAwarePlanCacheEnabled(srv.engineExecutionConfiguration) {
-			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes
+			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes.Load()
 		}
 		planCacheConfig := &ristretto.Config[uint64, *planWithMetaData]{
 			Metrics:            srv.metricConfig.OpenTelemetry.GraphqlCache || srv.metricConfig.Prometheus.GraphqlCache,
@@ -1541,7 +1541,7 @@ func (s *graphServer) buildGraphMux(
 	}
 	// Client-facing WebSocket subscriptions are disabled; skip upstream ping loops
 	// that would otherwise start one goroutine per subgraph datasource factory.
-	if mondaytweaks.DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled &&
+	if mondaytweaks.DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled.Load() &&
 		s.webSocketConfiguration != nil && !s.webSocketConfiguration.Enabled {
 		subscriptionClientOptions.PingInterval = 0
 	}

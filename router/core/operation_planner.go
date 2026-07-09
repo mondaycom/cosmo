@@ -73,7 +73,7 @@ func estimatePlanCacheCost(p *planWithMetaData) int64 {
 // DisableSizeAwarePlanCache override forces count-based eviction (tests, or a targeted
 // per-router rollback) without mutating the global flag, which matters under -race.
 func sizeAwarePlanCacheEnabled(cfg config.EngineExecutionConfiguration) bool {
-	return mondaytweaks.SizeAwarePlanCache && !cfg.DisableSizeAwarePlanCache
+	return mondaytweaks.SizeAwarePlanCache.Load() && !cfg.DisableSizeAwarePlanCache
 }
 
 // planCacheCost returns the Ristretto cost for a plan-cache entry: the size-aware estimate
