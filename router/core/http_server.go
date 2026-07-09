@@ -152,7 +152,7 @@ func (s *server) SwapGraphServer(ctx context.Context, svr *graphServer) {
 	}
 	old := oldState.graphServer
 
-	if mondaytweaks.AsyncBoundedOldGraphServerShutdown {
+	if mondaytweaks.AsyncBoundedOldGraphServerShutdown.Load() {
 		// New traffic already routes to svr after the swap above. Shut the old server
 		// down OFF this goroutine (SwapGraphServer runs synchronously on the config
 		// poller) and bound its in-flight drain, so a slow/stuck request can never

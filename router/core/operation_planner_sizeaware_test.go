@@ -65,7 +65,7 @@ func TestSizeAwarePlanCacheEnabled(t *testing.T) {
 	if sizeAwarePlanCacheEnabled(config.EngineExecutionConfiguration{DisableSizeAwarePlanCache: true}) {
 		t.Fatal("DisableSizeAwarePlanCache must force count-based eviction")
 	}
-	if got := sizeAwarePlanCacheEnabled(config.EngineExecutionConfiguration{}); got != mondaytweaks.SizeAwarePlanCache {
-		t.Fatalf("unset config should follow mondaytweaks.SizeAwarePlanCache=%v, got %v", mondaytweaks.SizeAwarePlanCache, got)
+	if got := sizeAwarePlanCacheEnabled(config.EngineExecutionConfiguration{}); got != mondaytweaks.SizeAwarePlanCache.Load() {
+		t.Fatalf("unset config should follow mondaytweaks.SizeAwarePlanCache=%v, got %v", mondaytweaks.SizeAwarePlanCache.Load(), got)
 	}
 }

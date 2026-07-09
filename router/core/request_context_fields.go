@@ -263,7 +263,7 @@ func getCustomDynamicAttributeValue(
 		}
 		return reqContext.operation.planningTime
 	case ContextFieldOperationSubgraphFetchCount:
-		if !mondaytweaks.ExposeOperationSubgraphFetchCountContextField || reqContext.operation == nil {
+		if !mondaytweaks.ExposeOperationSubgraphFetchCountContextField.Load() || reqContext.operation == nil {
 			return ""
 		}
 		stats, statsErr := reqContext.operation.QueryPlanStats()
