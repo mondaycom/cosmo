@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/otel/otelconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
@@ -371,17 +373,46 @@ func defaultPrometheusMetricOptions(ctx context.Context, serviceInstanceID strin
 
 	// Exclude attributes from metrics
 
-	attributeFilter := func(value attribute.KeyValue) bool {
-		if isKeyInSlice(value.Key, defaultExcludedOtelKeys) {
-			return false
+	var attributeFilter func(attribute.KeyValue) bool
+	if mondaytweaks.CacheMetricAttributeExcludeDecisions.Load() {
+		// Cached path: memoize the per-key decision in a sync.Map so the regex loop
+		// runs at most once per distinct attribute key. After warmup the hot path is
+		// a single map lookup — O(1), zero regex calls, zero allocs.
+		var cache sync.Map
+		attributeFilter = func(value attribute.KeyValue) bool {
+			if v, ok := cache.Load(value.Key); ok {
+				return v.(bool)
+			}
+			// Cache miss: compute once using identical logic to the original path.
+			result := true
+			if isKeyInSlice(value.Key, defaultExcludedOtelKeys) {
+				result = false
+			} else {
+				name := SanitizeName(string(value.Key))
+				for _, re := range c.Prometheus.ExcludeMetricLabels {
+					if re.MatchString(name) {
+						result = false
+						break
+					}
+				}
+			}
+			cache.Store(value.Key, result)
+			return result
 		}
-		name := SanitizeName(string(value.Key))
-		for _, re := range c.Prometheus.ExcludeMetricLabels {
-			if re.MatchString(name) {
+	} else {
+		// Original path — unchanged.
+		attributeFilter = func(value attribute.KeyValue) bool {
+			if isKeyInSlice(value.Key, defaultExcludedOtelKeys) {
 				return false
 			}
+			name := SanitizeName(string(value.Key))
+			for _, re := range c.Prometheus.ExcludeMetricLabels {
+				if re.MatchString(name) {
+					return false
+				}
+			}
+			return true
 		}
-		return true
 	}
 
 	msBucketHistogram := sdkmetric.AggregationExplicitBucketHistogram{
@@ -455,13 +486,37 @@ func defaultOtlpMetricOptions(ctx context.Context, serviceInstanceID string, c *
 		Boundaries: cloudOtelBytesBucketBounds,
 	}
 
-	attributeFilter := func(value attribute.KeyValue) bool {
-		for _, re := range c.OpenTelemetry.ExcludeMetricLabels {
-			if re.MatchString(string(value.Key)) {
-				return false
+	var attributeFilter func(attribute.KeyValue) bool
+	if mondaytweaks.CacheMetricAttributeExcludeDecisions.Load() {
+		// Cached path: memoize the per-key decision in a sync.Map so the regex loop
+		// runs at most once per distinct attribute key. After warmup the hot path is
+		// a single map lookup — O(1), zero regex calls, zero allocs.
+		var cache sync.Map
+		attributeFilter = func(value attribute.KeyValue) bool {
+			if v, ok := cache.Load(value.Key); ok {
+				return v.(bool)
 			}
+			// Cache miss: compute once using identical logic to the original path.
+			result := true
+			for _, re := range c.OpenTelemetry.ExcludeMetricLabels {
+				if re.MatchString(string(value.Key)) {
+					result = false
+					break
+				}
+			}
+			cache.Store(value.Key, result)
+			return result
 		}
-		return true
+	} else {
+		// Original path — unchanged.
+		attributeFilter = func(value attribute.KeyValue) bool {
+			for _, re := range c.OpenTelemetry.ExcludeMetricLabels {
+				if re.MatchString(string(value.Key)) {
+					return false
+				}
+			}
+			return true
+		}
 	}
 
 	var view sdkmetric.View = func(i sdkmetric.Instrument) (sdkmetric.Stream, bool) {

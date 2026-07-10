@@ -50,6 +50,18 @@ var (
 
 	// SizeAwarePlanCache — monday perf tweak (#7 OPEN); not an upstream memory-leak fix.
 	SizeAwarePlanCache atomic.Bool
+
+	// CacheMetricAttributeExcludeDecisions memoizes per-attribute-key exclude decisions in
+	// the OTEL and Prometheus metric attribute-filter closures. In production profiling
+	// (74.7s / 4.4% CPU) the regex loop runs on EVERY attribute of EVERY measurement.
+	// Attribute keys are a small, bounded, static set of strings (http.method, wg.operation.name,
+	// etc.), so computing the regex result once per distinct key and storing it in a sync.Map
+	// reduces the hot path to a single map lookup — O(1) with zero regex calls and zero allocs
+	// after warmup. Semantics are identical to the original path: the same regexes run on the
+	// same input; only the result is cached. On the Prometheus path the isKeyInSlice +
+	// SanitizeName steps are preserved inside the cache-miss branch so the final cached decision
+	// is always correct. Enabled by default.
+	CacheMetricAttributeExcludeDecisions atomic.Bool
 )
 
 func init() {
@@ -60,4 +72,5 @@ func init() {
 	AsyncBoundedOldGraphServerShutdown.Store(true)
 	PlanCacheSizeAwareBudgetPerSlotBytes.Store(8 * 1024)
 	SizeAwarePlanCache.Store(true)
+	CacheMetricAttributeExcludeDecisions.Store(true)
 }
