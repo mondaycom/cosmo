@@ -50,6 +50,29 @@ var (
 
 	// SizeAwarePlanCache — monday perf tweak (#7 OPEN); not an upstream memory-leak fix.
 	SizeAwarePlanCache atomic.Bool
+
+	// DropRedundantSpanAttributes stops boxing the three deploy-constant wg.* attributes
+	// (wg.router.version, wg.router.cluster.name, wg.federated_graph.id) onto every span,
+	// because they are instead carried once on the OTEL trace Resource.
+	//
+	// Motivation (prod pprof, F2-B): the shared traceAttrs base set (~11 attrs) is appended
+	// to EVERY span — root + parse/normalize/validate/plan/execute + Engine-Fetch xN subgraphs
+	// + transport xN. attribute.KeyValue boxing of those redundant static attrs accounted for
+	// ~30GB alloc / 90s in production. Three of them are deploy-constants known at
+	// tracer-provider startup, so they belong on the Resource, which every exporter attaches
+	// to every span implicitly. Datadog and Coralogix surface resource attributes as
+	// span-level tags under the same key, so dropping them from the per-span attribute set
+	// loses zero information downstream while eliminating the per-span boxing.
+	//
+	// When true (default): the three attrs are added to the trace Resource at provider
+	// construction AND dropped from per-span WithAttributes/SetAttributes via
+	// FilteringTracerProvider.
+	// When false: byte-identical to upstream — the attrs stay per-span and are NOT added to
+	// the Resource (no duplication).
+	//
+	// wg.router.config.version is deliberately excluded: it changes on every CDN config
+	// hot-reload, so it cannot live on the once-constructed Resource and must remain per-span.
+	DropRedundantSpanAttributes atomic.Bool
 )
 
 func init() {
@@ -60,4 +83,5 @@ func init() {
 	AsyncBoundedOldGraphServerShutdown.Store(true)
 	PlanCacheSizeAwareBudgetPerSlotBytes.Store(8 * 1024)
 	SizeAwarePlanCache.Store(true)
+	DropRedundantSpanAttributes.Store(true)
 }

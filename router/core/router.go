@@ -42,6 +42,7 @@ import (
 	"github.com/wundergraph/cosmo/router/internal/persistedoperation/operationstorage/fs"
 	"github.com/wundergraph/cosmo/router/internal/persistedoperation/operationstorage/s3"
 	"github.com/wundergraph/cosmo/router/internal/persistedoperation/pqlmanifest"
+	rjwt "github.com/wundergraph/cosmo/router/internal/jwt"
 	rd "github.com/wundergraph/cosmo/router/internal/rediscloser"
 	"github.com/wundergraph/cosmo/router/internal/retrytransport"
 	"github.com/wundergraph/cosmo/router/internal/stringsx"
@@ -55,6 +56,8 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/health"
 	"github.com/wundergraph/cosmo/router/pkg/mcpserver"
 	rmetric "github.com/wundergraph/cosmo/router/pkg/metric"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
+	cosmootel "github.com/wundergraph/cosmo/router/pkg/otel"
 	"github.com/wundergraph/cosmo/router/pkg/otel/otelconfig"
 	"github.com/wundergraph/cosmo/router/pkg/statistics"
 	rtrace "github.com/wundergraph/cosmo/router/pkg/trace"
@@ -900,6 +903,32 @@ func (r *Router) bootstrap(ctx context.Context) error {
 	}
 
 	if r.traceConfig.Enabled {
+		// F2-B (mondaytweaks.DropRedundantSpanAttributes): carry the deploy-constant wg.*
+		// attributes on the trace Resource instead of boxing them onto every span. These are
+		// the same static values graph_server.go otherwise appends to baseOtelAttributes; they
+		// are known here at tracer-provider startup (build version const, router option
+		// clusterName, and the federated graph id encoded in the graph API token). The
+		// FilteringTracerProvider then drops the identical keys from per-span attributes while
+		// the flag is on, so downstream (Datadog/Coralogix surface resource attrs as span tags)
+		// sees no change. Gated on the same flag so flag-off stays byte-identical (no Resource
+		// duplication). wg.router.config.version is excluded — it changes on config reload and
+		// cannot live on the once-constructed Resource.
+		if mondaytweaks.DropRedundantSpanAttributes.Load() {
+			redundantResourceAttrs := []attribute.KeyValue{
+				cosmootel.WgRouterVersion.String(Version),
+				cosmootel.WgRouterClusterName.String(r.clusterName),
+			}
+			if r.graphApiToken != "" {
+				if claims, claimsErr := rjwt.ExtractFederatedGraphTokenClaims(r.graphApiToken); claimsErr == nil {
+					redundantResourceAttrs = append(redundantResourceAttrs, cosmootel.WgFederatedGraphID.String(claims.FederatedGraphID))
+				} else {
+					r.logger.Warn("Could not extract federated graph id for trace Resource; it will remain a per-span attribute",
+						zap.Error(claimsErr))
+				}
+			}
+			r.traceConfig.ResourceAttributes = append(r.traceConfig.ResourceAttributes, redundantResourceAttrs...)
+		}
+
 		tp, err := rtrace.NewTracerProvider(ctx, &rtrace.ProviderConfig{
 			Logger:            r.logger,
 			Config:            r.traceConfig,
