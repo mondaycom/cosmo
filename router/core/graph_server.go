@@ -1817,6 +1817,7 @@ func (s *graphServer) buildGraphMux(
 
 	if s.authorization != nil {
 		authorizerOptions.RejectOperationIfUnauthorized = s.authorization.RejectOperationIfUnauthorized
+		authorizerOptions.EnablePreFetchFieldAuthorization = s.authorization.EnablePreFetchFieldAuthorization
 	}
 
 	loaderHooks := NewEngineRequestHooks(
@@ -1893,6 +1894,11 @@ func (s *graphServer) buildGraphMux(
 		return nil, fmt.Errorf("failed to create operation blocker: %w", err)
 	}
 
+	var waitForCacheWrites func()
+	if s.engineExecutionConfiguration.Debug.SynchronousCacheWrites {
+		waitForCacheWrites = gm.waitForCaches
+	}
+
 	graphqlPreHandler := NewPreHandler(&PreHandlerOptions{
 		Logger:                                 s.logger,
 		Executor:                               executor,
@@ -1931,6 +1937,7 @@ func (s *graphServer) buildGraphMux(
 		HeaderPropagation:                      s.headerPropagation,
 		OperationContentAttributes:             s.traceConfig.OperationContentAttributes,
 		SpanNameFormatter:                      s.spanNameFormatter,
+		WaitForCacheWrites:                     waitForCacheWrites,
 	})
 
 	if s.webSocketConfiguration != nil && s.webSocketConfiguration.Enabled {
