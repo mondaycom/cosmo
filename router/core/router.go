@@ -684,9 +684,10 @@ func (r *Router) initModules(ctx context.Context) error {
 		moduleInstance := moduleInfo.New()
 
 		mc := &ModuleContext{
-			Context: ctx,
-			Module:  moduleInstance,
-			Logger:  r.logger.With(zap.String("module", string(moduleInfo.ID))),
+			Context:      ctx,
+			Module:       moduleInstance,
+			Logger:       r.logger.With(zap.String("module", string(moduleInfo.ID))),
+			HealthChecks: r.healthcheck,
 		}
 
 		moduleConfig, ok := r.modulesConfig[string(moduleInfo.ID)]
