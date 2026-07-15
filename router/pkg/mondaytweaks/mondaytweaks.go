@@ -50,6 +50,17 @@ var (
 
 	// SizeAwarePlanCache — monday perf tweak (#7 OPEN); not an upstream memory-leak fix.
 	SizeAwarePlanCache atomic.Bool
+
+	// DisableFieldDependencies skips the per-fetch CoordinateDependencies allocation during
+	// planning. CoordinateDependencies ([]FetchDependency per fetch) are query-plan metadata
+	// used only for observability/visualisation — not read during request execution, tainted-
+	// entity filtering, or subgraph propagation. With 200 unique cached operations this saves
+	// ~30-40% of per-plan heap above the schema baseline (~40 MiB / 200 plans in the
+	// cardinality-high benchmark, 500 KiB heap / ~1 MiB RSS per plan).
+	//
+	// Corresponds to plan.Configuration.DisableIncludeFieldDependencies. The flag is read
+	// once in factoryresolver.Load() so it takes effect on the next config reload.
+	DisableFieldDependencies atomic.Bool
 )
 
 func init() {
@@ -60,4 +71,5 @@ func init() {
 	AsyncBoundedOldGraphServerShutdown.Store(true)
 	PlanCacheSizeAwareBudgetPerSlotBytes.Store(8 * 1024)
 	SizeAwarePlanCache.Store(true)
+	DisableFieldDependencies.Store(true)
 }
