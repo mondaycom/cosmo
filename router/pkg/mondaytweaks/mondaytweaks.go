@@ -69,11 +69,6 @@ var (
 	// SizeAwarePlanCache is enabled.
 	PlanCacheCostCountsPlanTree atomic.Bool
 
-	// ReuseGraphQLSource pre-allocates a single shared Source wrapper on the
-	// graphql_datasource Factory that is reused across all subgraph fetches, instead
-	// of allocating a new Source per fetch in ConfigureFetch. With cached plans making
-	// many fetches, this removes a per-fetch allocation on the hot request path.
-	ReuseGraphQLSource atomic.Bool
 )
 
 func init() {
@@ -86,5 +81,5 @@ func init() {
 	SizeAwarePlanCache.Store(true)
 	DisableFieldDependencies.Store(true)
 	PlanCacheCostCountsPlanTree.Store(true)
-	ReuseGraphQLSource.Store(true)
+
 }
