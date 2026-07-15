@@ -192,7 +192,7 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 
 	if d.transportFactory == nil || d.baseTransport == nil {
 		// dummy implementation for plan generator that doesn't make requests
-		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, d.subscriptionClientForFactory())
+		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, d.subscriptionClientForFactory(), graphql_datasource.WithSourceCaching(mondaytweaks.ReuseGraphQLSource.Load()))
 	}
 
 	defaultHTTPClient := &http.Client{
@@ -203,10 +203,10 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 	if subgraphClient, ok := d.subgraphHTTPClients[subgraphName]; ok {
 		// it's intentional that we're not using the subgraphClient for subscriptions
 		// custom subgraph clients are intended to be used for custom timeouts, which is not relevant for subscriptions
-		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, d.subscriptionClientForFactory())
+		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, d.subscriptionClientForFactory(), graphql_datasource.WithSourceCaching(mondaytweaks.ReuseGraphQLSource.Load()))
 	}
 
-	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, d.subscriptionClientForFactory())
+	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, d.subscriptionClientForFactory(), graphql_datasource.WithSourceCaching(mondaytweaks.ReuseGraphQLSource.Load()))
 }
 
 func (d *DefaultFactoryResolver) subscriptionClientForFactory() graphql_datasource.GraphQLSubscriptionClient {
