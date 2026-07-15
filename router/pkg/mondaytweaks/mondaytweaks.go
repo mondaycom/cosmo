@@ -50,6 +50,11 @@ var (
 
 	// SizeAwarePlanCache — monday perf tweak (#7 OPEN); not an upstream memory-leak fix.
 	SizeAwarePlanCache atomic.Bool
+
+	// IncrementalWatcherReload populates routerconfig.Response Changes/Hashes on
+	// file/manifest watcher reloads so graph_server can reuse unchanged feature-flag
+	// muxes instead of rebuilding every graph on each reload.
+	IncrementalWatcherReload atomic.Bool
 )
 
 func init() {
@@ -60,4 +65,5 @@ func init() {
 	AsyncBoundedOldGraphServerShutdown.Store(true)
 	PlanCacheSizeAwareBudgetPerSlotBytes.Store(8 * 1024)
 	SizeAwarePlanCache.Store(true)
+	IncrementalWatcherReload.Store(true)
 }

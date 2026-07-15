@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,7 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/execution_config"
 	"github.com/wundergraph/cosmo/router/pkg/health"
 	"github.com/wundergraph/cosmo/router/pkg/mcpserver"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	rmetric "github.com/wundergraph/cosmo/router/pkg/metric"
 	"github.com/wundergraph/cosmo/router/pkg/otel/otelconfig"
 	"github.com/wundergraph/cosmo/router/pkg/statistics"
@@ -1618,6 +1620,10 @@ func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 		return err
 	}
 
+	if err := r.seedAppliedGraphHashes(r.staticExecutionConfig); err != nil {
+		return fmt.Errorf("failed to seed applied graph hashes: %w", err)
+	}
+
 	r.startPQLPoller(ctx)
 
 	var (
@@ -1677,6 +1683,75 @@ func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 	return nil
 }
 
+func (r *Router) seedAppliedGraphHashes(cfg *nodev1.RouterConfig) error {
+	if !mondaytweaks.IncrementalWatcherReload.Load() {
+		return nil
+	}
+
+	var (
+		hashes map[string]string
+		err    error
+	)
+
+	if r.manifestConfig != nil {
+		hashes, err = routerconfig.ReadManifestMapperHashes(
+			r.manifestConfig.Path,
+			r.manifestConfig.IgnoredFeatureFlags,
+		)
+	} else {
+		hashes, err = routerconfig.ComputeGraphHashesFromConfig(cfg)
+	}
+	if err != nil {
+		return err
+	}
+
+	r.setAppliedGraphHashes(hashes)
+	return nil
+}
+
+func (r *Router) graphHashesUnchanged(newHashes map[string]string) bool {
+	if !mondaytweaks.IncrementalWatcherReload.Load() || len(newHashes) == 0 {
+		return false
+	}
+
+	r.appliedGraphHashesMu.Lock()
+	knownHashes := maps.Clone(r.appliedGraphHashes)
+	r.appliedGraphHashesMu.Unlock()
+
+	if len(knownHashes) == 0 {
+		return false
+	}
+
+	return !routerconfig.GraphHashesChanged(knownHashes, newHashes)
+}
+
+func (r *Router) buildWatcherReloadResponse(cfg *nodev1.RouterConfig, newHashes map[string]string) *routerconfig.Response {
+	if !mondaytweaks.IncrementalWatcherReload.Load() || len(newHashes) == 0 {
+		return &routerconfig.Response{Config: cfg}
+	}
+
+	r.appliedGraphHashesMu.Lock()
+	knownHashes := maps.Clone(r.appliedGraphHashes)
+	r.appliedGraphHashesMu.Unlock()
+
+	if len(knownHashes) == 0 {
+		return &routerconfig.Response{Config: cfg}
+	}
+
+	changes, hashInfos := routerconfig.DiffGraphHashes(knownHashes, newHashes)
+	return &routerconfig.Response{
+		Config:  cfg,
+		Changes: &changes,
+		Hashes:  hashInfos,
+	}
+}
+
+func (r *Router) setAppliedGraphHashes(hashes map[string]string) {
+	r.appliedGraphHashesMu.Lock()
+	defer r.appliedGraphHashesMu.Unlock()
+	r.appliedGraphHashes = maps.Clone(hashes)
+}
+
 func (r *Router) buildExecutionConfigWatcher(ctx context.Context, ll *zap.Logger) (watcher.WatcherFunc, error) {
 	w, err := watcher.New(watcher.Options{
 		Logger:   ll,
@@ -1702,9 +1777,25 @@ func (r *Router) buildExecutionConfigWatcher(ctx context.Context, ll *zap.Logger
 				return
 			}
 
-			if err := r.newServer(ctx, &routerconfig.Response{Config: cfg}); err != nil {
+			newHashes, err := routerconfig.ComputeGraphHashesFromConfig(cfg)
+			if err != nil {
+				ll.Error("Failed to compute graph hashes from config", zap.Error(err))
+				return
+			}
+
+			if mondaytweaks.IncrementalWatcherReload.Load() && r.graphHashesUnchanged(newHashes) {
+				ll.Debug("No graph hash changes detected, skipping reload")
+				return
+			}
+
+			response := r.buildWatcherReloadResponse(cfg, newHashes)
+			if err := r.newServer(ctx, response); err != nil {
 				ll.Error("Failed to update server with new config", zap.Error(err))
 				return
+			}
+
+			if mondaytweaks.IncrementalWatcherReload.Load() {
+				r.setAppliedGraphHashes(newHashes)
 			}
 		},
 	})
@@ -1727,6 +1818,24 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 				return
 			}
 
+			var newHashes map[string]string
+			if mondaytweaks.IncrementalWatcherReload.Load() {
+				var err error
+				newHashes, err = routerconfig.ReadManifestMapperHashes(
+					r.manifestConfig.Path,
+					r.manifestConfig.IgnoredFeatureFlags,
+				)
+				if err != nil {
+					ll.Error("Failed to read manifest mapper hashes", zap.Error(err))
+					return
+				}
+
+				if r.graphHashesUnchanged(newHashes) {
+					ll.Debug("No graph hash changes detected, skipping reload")
+					return
+				}
+			}
+
 			cfg, err := routerconfig.AssembleStaticExecutionConfigFromManifest(
 				r.manifestConfig.Path, routerconfig.AssembleConfigRules{
 					SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
@@ -1740,12 +1849,17 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 
 			ll.Info("Manifest config changed. Updating server with new config", zap.String("path", r.manifestConfig.Path))
 
-			if err := r.newServer(ctx, &routerconfig.Response{Config: cfg}); err != nil {
+			response := r.buildWatcherReloadResponse(cfg, newHashes)
+			if err := r.newServer(ctx, response); err != nil {
 				ll.Error("Failed to update server with new config", zap.Error(err))
 				return
 			}
 			r.staticExecutionConfig = cfg
 			r.trackExecutionConfigUsage(cfg, true)
+
+			if mondaytweaks.IncrementalWatcherReload.Load() {
+				r.setAppliedGraphHashes(newHashes)
+			}
 		},
 	})
 

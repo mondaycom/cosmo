@@ -2,6 +2,7 @@ package core
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
@@ -158,6 +159,8 @@ type Config struct {
 	grpcPluginDialOptions         []grpc.DialOption
 	tracingAttributes             []config.CustomAttribute
 	subscriptionHooks             subscriptionHooks
+	appliedGraphHashes            map[string]string
+	appliedGraphHashesMu          sync.Mutex
 }
 
 // Usage returns an anonymized version of the config for usage tracking
