@@ -379,6 +379,7 @@ func mapProtoFilterToPlanFilter(input *nodev1.SubscriptionFilterCondition, outpu
 // along with any pub/sub providers that need lifecycle management.
 func (l *Loader) Load(engineConfig *nodev1.EngineConfiguration, subgraphs []*nodev1.Subgraph, routerEngineConfig *RouterEngineConfiguration, pluginsEnabled bool) (*plan.Configuration, []pubsub_datasource.Provider, error) {
 	var outConfig plan.Configuration
+	outConfig.DisableIncludeFieldDependencies = mondaytweaks.DisableFieldDependencies.Load()
 	// attach field usage information to the plan
 	outConfig.DefaultFlushIntervalMillis = engineConfig.DefaultFlushInterval
 	for _, configuration := range engineConfig.FieldConfigurations {
