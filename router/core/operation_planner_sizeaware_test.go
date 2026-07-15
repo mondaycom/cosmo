@@ -93,6 +93,11 @@ func TestEstimatePlanCacheCostCountsPlanTree(t *testing.T) {
 			Response: &resolve.GraphQLResponse{Fetches: fetches, Data: data},
 		},
 	}
+
+	prev := mondaytweaks.PlanCacheCostCountsPlanTree.Load()
+	defer mondaytweaks.PlanCacheCostCountsPlanTree.Store(prev)
+
+	mondaytweaks.PlanCacheCostCountsPlanTree.Store(true)
 	withTree := estimatePlanCacheCost(withPlan)
 
 	if withTree <= baseline {
@@ -102,6 +107,13 @@ func TestEstimatePlanCacheCostCountsPlanTree(t *testing.T) {
 	wantMin := baseline + 2*planCacheCostFetchBytes + 3*planCacheCostFieldBytes
 	if withTree < wantMin {
 		t.Fatalf("expected cost >= %d (baseline + 2 fetches + 3 fields), got %d", wantMin, withTree)
+	}
+
+	// With the flag disabled the tree walk is skipped, so the plan-bearing entry costs the
+	// same as the AST-only accounting for the same operation document.
+	mondaytweaks.PlanCacheCostCountsPlanTree.Store(false)
+	if got := estimatePlanCacheCost(withPlan); got != baseline {
+		t.Fatalf("flag disabled: want AST-only baseline %d, got %d", baseline, got)
 	}
 }
 

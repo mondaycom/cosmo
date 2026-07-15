@@ -78,10 +78,12 @@ func estimatePlanCacheCost(p *planWithMetaData) int64 {
 	// The prepared plan tree retains the bulk of the entry's heap: one fetch struct per
 	// subgraph fetch and one Field/FieldInfo per response field. Walk it once per cache miss
 	// (O(fetches + fields)) so the estimate tracks actual footprint, not just operation size.
-	if syncPlan, ok := p.preparedPlan.(*plan.SynchronousResponsePlan); ok && syncPlan.Response != nil {
-		fetches := countFetchTreeNodes(syncPlan.Response.Fetches)
-		fields := countResponseFields(syncPlan.Response.Data)
-		cost += int64(fetches)*planCacheCostFetchBytes + int64(fields)*planCacheCostFieldBytes
+	if mondaytweaks.PlanCacheCostCountsPlanTree.Load() {
+		if syncPlan, ok := p.preparedPlan.(*plan.SynchronousResponsePlan); ok && syncPlan.Response != nil {
+			fetches := countFetchTreeNodes(syncPlan.Response.Fetches)
+			fields := countResponseFields(syncPlan.Response.Data)
+			cost += int64(fetches)*planCacheCostFetchBytes + int64(fields)*planCacheCostFieldBytes
+		}
 	}
 
 	if cost < 1 {
