@@ -39,6 +39,18 @@ const (
 	planCacheCostUsageBytes = 64
 )
 
+// planCacheCostFetchBytes and planCacheCostFieldBytes approximate the retained heap of a single
+// prepared-plan fetch (SingleFetch/EntityFetch/BatchEntityFetch, each carrying FetchInfo,
+// FetchConfiguration and an InputTemplate — empirically ~40 KiB) and a single response field
+// node (Field + FieldInfo with its []string slices — empirically ~500-800 bytes). Benchmark
+// data: 200 unique plans retaining 103 MiB of plan-cache heap (~515 KiB/plan) with ~8 fetches
+// and ~100-200 response fields per plan. The AST-only estimate above undercounts this by ~65x
+// because the plan tree — not the operation document — holds the bulk of the memory.
+const (
+	planCacheCostFetchBytes = 32 * 1024
+	planCacheCostFieldBytes = 768
+)
+
 // estimatePlanCacheCost approximates the retained heap of a cached plan entry so the
 // size-aware Ristretto config (mondaytweaks.SizeAwarePlanCache) evicts by memory footprint
 // instead of by entry count. It keys off operationDocument, which is always populated (the
@@ -62,10 +74,62 @@ func estimatePlanCacheCost(p *planWithMetaData) int64 {
 		cost += int64(nodes) * planCacheCostNodeBytes
 	}
 	cost += int64(len(p.typeFieldUsageInfo)+len(p.argumentUsageInfo)) * planCacheCostUsageBytes
+
+	// The prepared plan tree retains the bulk of the entry's heap: one fetch struct per
+	// subgraph fetch and one Field/FieldInfo per response field. Walk it once per cache miss
+	// (O(fetches + fields)) so the estimate tracks actual footprint, not just operation size.
+	if syncPlan, ok := p.preparedPlan.(*plan.SynchronousResponsePlan); ok && syncPlan.Response != nil {
+		fetches := countFetchTreeNodes(syncPlan.Response.Fetches)
+		fields := countResponseFields(syncPlan.Response.Data)
+		cost += int64(fetches)*planCacheCostFetchBytes + int64(fields)*planCacheCostFieldBytes
+	}
+
 	if cost < 1 {
 		return 1
 	}
 	return cost
+}
+
+// countFetchTreeNodes returns the number of fetch nodes (Item != nil) in the fetch tree,
+// including a subscription Trigger. Each corresponds to a subgraph fetch whose FetchInfo,
+// FetchConfiguration and InputTemplate dominate the prepared plan's retained heap.
+func countFetchTreeNodes(n *resolve.FetchTreeNode) int {
+	if n == nil {
+		return 0
+	}
+	count := 0
+	if n.Item != nil {
+		count++
+	}
+	count += countFetchTreeNodes(n.Trigger)
+	for _, child := range n.ChildNodes {
+		count += countFetchTreeNodes(child)
+	}
+	return count
+}
+
+// countResponseFields returns the number of Field nodes in the response Data tree, recursing
+// through Object and Array nodes. Each Field carries a *FieldInfo whose []string slices make it
+// the second-largest contributor to a cached plan's heap after the fetches.
+func countResponseFields(node resolve.Node) int {
+	switch v := node.(type) {
+	case *resolve.Object:
+		if v == nil {
+			return 0
+		}
+		count := len(v.Fields)
+		for _, f := range v.Fields {
+			count += countResponseFields(f.Value)
+		}
+		return count
+	case *resolve.Array:
+		if v == nil {
+			return 0
+		}
+		return countResponseFields(v.Item)
+	default:
+		return 0
+	}
 }
 
 // sizeAwarePlanCacheEnabled reports whether the execution-plan cache should evict by estimated
