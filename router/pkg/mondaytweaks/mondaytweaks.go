@@ -61,6 +61,14 @@ var (
 	// Corresponds to plan.Configuration.DisableIncludeFieldDependencies. The flag is read
 	// once in factoryresolver.Load() so it takes effect on the next config reload.
 	DisableFieldDependencies atomic.Bool
+	// PlanCacheCostCountsPlanTree enables the fetch-tree + response-field walk in the
+	// execution-plan-cache cost estimator (estimatePlanCacheCost). When enabled, the estimate
+	// adds ~32 KiB per subgraph fetch and ~768 B per response field on top of the AST-only
+	// accounting, so the size-aware cache evicts by the heap the prepared plan tree actually
+	// retains rather than by operation-document size alone. Only has an effect when
+	// SizeAwarePlanCache is enabled.
+	PlanCacheCostCountsPlanTree atomic.Bool
+
 )
 
 func init() {
@@ -72,4 +80,6 @@ func init() {
 	PlanCacheSizeAwareBudgetPerSlotBytes.Store(8 * 1024)
 	SizeAwarePlanCache.Store(true)
 	DisableFieldDependencies.Store(true)
+	PlanCacheCostCountsPlanTree.Store(true)
+
 }

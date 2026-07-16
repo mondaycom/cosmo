@@ -6,6 +6,8 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
+	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/plan"
+	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/resolve"
 )
 
 // TestEstimatePlanCacheCost verifies the size-aware cost estimate is nil-safe, always
@@ -37,6 +39,81 @@ func TestEstimatePlanCacheCost(t *testing.T) {
 	}
 	if cl <= cs {
 		t.Fatalf("expected large plan to cost more than small: small=%d large=%d", cs, cl)
+	}
+}
+
+// TestEstimatePlanCacheCostCountsPlanTree verifies the prepared-plan tree walk dominates the
+// estimate: a plan retaining several subgraph fetches and a nested response tree must cost far
+// more than the AST-only accounting for the same operation document, so Ristretto evicts by the
+// heap the plan tree actually retains rather than by operation size alone.
+func TestEstimatePlanCacheCostCountsPlanTree(t *testing.T) {
+	doc := &ast.Document{}
+	doc.Input.RawBytes = []byte("query{a{b{c}}}")
+	doc.Fields = make([]ast.Field, 3)
+	doc.Selections = make([]ast.Selection, 3)
+
+	astOnly := &planWithMetaData{operationDocument: doc}
+	baseline := estimatePlanCacheCost(astOnly)
+
+	// Two subgraph fetches under a Sequence node (Item != nil ⇒ counted).
+	fetches := &resolve.FetchTreeNode{
+		Kind: resolve.FetchTreeNodeKindSequence,
+		ChildNodes: []*resolve.FetchTreeNode{
+			{Kind: resolve.FetchTreeNodeKindSingle, Item: &resolve.FetchItem{}},
+			{Kind: resolve.FetchTreeNodeKindSingle, Item: &resolve.FetchItem{}},
+		},
+	}
+
+	// Nested response shape: root object → array of objects → leaf field (3 Field nodes).
+	data := &resolve.Object{
+		Fields: []*resolve.Field{
+			{
+				Name: []byte("a"),
+				Value: &resolve.Array{
+					Item: &resolve.Object{
+						Fields: []*resolve.Field{
+							{
+								Name: []byte("b"),
+								Value: &resolve.Object{
+									Fields: []*resolve.Field{
+										{Name: []byte("c"), Value: &resolve.String{}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	withPlan := &planWithMetaData{
+		operationDocument: doc,
+		preparedPlan: &plan.SynchronousResponsePlan{
+			Response: &resolve.GraphQLResponse{Fetches: fetches, Data: data},
+		},
+	}
+
+	prev := mondaytweaks.PlanCacheCostCountsPlanTree.Load()
+	defer mondaytweaks.PlanCacheCostCountsPlanTree.Store(prev)
+
+	mondaytweaks.PlanCacheCostCountsPlanTree.Store(true)
+	withTree := estimatePlanCacheCost(withPlan)
+
+	if withTree <= baseline {
+		t.Fatalf("plan tree walk must increase cost: astOnly=%d withPlan=%d", baseline, withTree)
+	}
+	// 2 fetches + 3 response fields must be accounted for on top of the AST baseline.
+	wantMin := baseline + 2*planCacheCostFetchBytes + 3*planCacheCostFieldBytes
+	if withTree < wantMin {
+		t.Fatalf("expected cost >= %d (baseline + 2 fetches + 3 fields), got %d", wantMin, withTree)
+	}
+
+	// With the flag disabled the tree walk is skipped, so the plan-bearing entry costs the
+	// same as the AST-only accounting for the same operation document.
+	mondaytweaks.PlanCacheCostCountsPlanTree.Store(false)
+	if got := estimatePlanCacheCost(withPlan); got != baseline {
+		t.Fatalf("flag disabled: want AST-only baseline %d, got %d", baseline, got)
 	}
 }
 
