@@ -72,7 +72,7 @@ type WebsocketMiddlewareOptions struct {
 	ApolloCompatibilityFlags config.ApolloCompatibilityFlags
 }
 
-func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) (func(http.Handler) http.Handler, *WebsocketHandler) {
+func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) func(http.Handler) http.Handler {
 	handler := &WebsocketHandler{
 		ctx:                       ctx,
 		operationProcessor:        opts.OperationProcessor,
@@ -150,7 +150,7 @@ func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions
 			}
 			handler.handleUpgradeRequest(w, r)
 		})
-	}, handler
+	}
 }
 
 // wsConnectionWrapper is a wrapper around websocket.Conn that allows
