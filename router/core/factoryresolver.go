@@ -184,29 +184,10 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 
 	if d.transportFactory == nil || d.baseTransport == nil {
 		// dummy implementation for plan generator that doesn't make requests
-		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, d.newSubscriptionClient())
-	}
-
-	defaultHTTPClient := &http.Client{
-		Timeout:   d.defaultSubgraphRequestTimeout,
-		Transport: d.transportFactory.RoundTripper(d.baseTransport),
-	}
-
-	if subgraphClient, ok := d.subgraphHTTPClients[subgraphName]; ok {
-		// it's intentional that we're not using the subgraphClient for subscriptions
-		// custom subgraph clients are intended to be used for custom timeouts, which is not relevant for subscriptions
-		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, d.newSubscriptionClient())
-	}
-
-	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, d.newSubscriptionClient())
-}
-
-func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.GraphQLSubscriptionClient {
-	if d.transportFactory == nil || d.baseTransport == nil {
-		return graphql_datasource.NewGraphQLSubscriptionClient(
-			d.engineCtx,
+		subscriptionClient := graphql_datasource.NewGraphQLSubscriptionClient(d.engineCtx,
 			d.subscriptionClientOptions...,
 		)
+		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, subscriptionClient)
 	}
 
 	defaultHTTPClient := &http.Client{
@@ -218,13 +199,18 @@ func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.Grap
 		Transport: d.transportFactory.RoundTripper(d.baseTransport),
 	}
 
-	return graphql_datasource.NewGraphQLSubscriptionClient(
+	subscriptionClient := graphql_datasource.NewGraphQLSubscriptionClient(
 		d.engineCtx,
-		append([]graphql_datasource.SubscriptionClientOption{
-			graphql_datasource.WithUpgradeClient(defaultHTTPClient),
-			graphql_datasource.WithStreamingClient(streamingClient),
-		}, d.subscriptionClientOptions...)...,
+		append([]graphql_datasource.SubscriptionClientOption{graphql_datasource.WithUpgradeClient(defaultHTTPClient), graphql_datasource.WithStreamingClient(streamingClient)}, d.subscriptionClientOptions...)...,
 	)
+
+	if subgraphClient, ok := d.subgraphHTTPClients[subgraphName]; ok {
+		// it's intentional that we're not using the subgraphClient for subscriptions
+		// custom subgraph clients are intended to be used for custom timeouts, which is not relevant for subscriptions
+		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, subscriptionClient)
+	}
+
+	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, subscriptionClient)
 }
 
 func (d *DefaultFactoryResolver) ResolveStaticFactory() (factory plan.PlannerFactory[staticdatasource.Configuration], err error) {
