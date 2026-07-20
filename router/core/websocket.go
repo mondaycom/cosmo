@@ -445,6 +445,7 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 	}
 
 	// Handle messages sync when net poller implementation is not available
+
 	go h.handleConnectionSync(handler)
 }
 
@@ -823,8 +824,6 @@ type WebSocketConnectionHandler struct {
 	apolloCompatibilityFlags config.ApolloCompatibilityFlags
 
 	clientInfoFromInitialPayload config.WebSocketClientInfoFromInitialPayloadConfiguration
-
-	closeOnce sync.Once
 }
 
 type forwardConfig struct {
@@ -1397,21 +1396,19 @@ func (h *WebSocketConnectionHandler) shouldComputeOperationSha256(operationKit *
 }
 
 func (h *WebSocketConnectionHandler) Close(unsubscribe bool, closeKind wsproto.CloseKind) {
-	h.closeOnce.Do(func() {
-		if unsubscribe {
-			// Remove any pending IDs associated with this connection
-			err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
-			if err != nil {
-				h.logger.Debug("Unsubscribing client", zap.Error(err))
-			}
+	if unsubscribe {
+		// Remove any pending IDs associated with this connection
+		err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
+		if err != nil {
+			h.logger.Debug("Unsubscribing client", zap.Error(err))
 		}
+	}
 
-		if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
-			h.logger.Debug("Writing close frame", zap.Error(err))
-		}
+	if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
+		h.logger.Debug("Writing close frame", zap.Error(err))
+	}
 
-		if err := h.conn.Close(); err != nil {
-			h.logger.Debug("Closing websocket connection", zap.Error(err))
-		}
-	})
+	if err := h.conn.Close(); err != nil {
+		h.logger.Debug("Closing websocket connection", zap.Error(err))
+	}
 }
