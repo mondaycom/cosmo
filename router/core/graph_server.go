@@ -1588,7 +1588,6 @@ func (s *graphServer) buildGraphMux(
 			HeartbeatInterval:              s.subscriptionHeartbeatInterval,
 			PluginsEnabled:                 s.plugins.Enabled,
 			InstanceData:                   s.instanceData,
-			WebSocketConfiguration:         s.webSocketConfiguration,
 		},
 	)
 	if err != nil {

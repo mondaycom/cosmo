@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/wundergraph/cosmo/router/pkg/health"
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 )
 
 // serverState holds the mux and graph server together for atomic swaps.
@@ -52,10 +51,6 @@ type server struct {
 	healthcheck health.Checker
 	baseURL     string
 	listener    net.Listener // Pre-bound listener for synchronous port check
-	// gracePeriod bounds the async old-graph-server in-flight drain on config swap
-	// (see mondaytweaks.AsyncBoundedOldGraphServerShutdown). Sourced from the router
-	// grace_period config value.
-	gracePeriod time.Duration
 }
 
 type httpServerOptions struct {
@@ -68,7 +63,6 @@ type httpServerOptions struct {
 	livenessCheckPath  string
 	readinessCheckPath string
 	healthCheckPath    string
-	gracePeriod        time.Duration
 }
 
 func newServer(opts *httpServerOptions) (*server, error) {
@@ -102,7 +96,6 @@ func newServer(opts *httpServerOptions) (*server, error) {
 		healthcheck: opts.healthcheck,
 		baseURL:     opts.baseURL,
 		listener:    listener, // Store the pre-bound listener
-		gracePeriod: opts.gracePeriod,
 	}
 
 	// Store the initial state with health check mux (graphServer nil until first config)
@@ -147,52 +140,12 @@ func (s *server) SwapGraphServer(ctx context.Context, svr *graphServer) {
 
 	// Shutdown the old graph server if it exists.
 	// On first startup, oldState.graphServer is nil.
-	if oldState == nil || oldState.graphServer == nil {
-		return
-	}
-	old := oldState.graphServer
-
-	if mondaytweaks.AsyncBoundedOldGraphServerShutdown.Load() {
-		// New traffic already routes to svr after the swap above. Shut the old server
-		// down OFF this goroutine (SwapGraphServer runs synchronously on the config
-		// poller) and bound its in-flight drain, so a slow/stuck request can never
-		// freeze CDN config hot-reload (ticket #3286) or pin the old generation's
-		// schema + caches in memory. Detach from ctx (which stays alive for the router
-		// lifetime) but keep its values for tracing, then bound by the grace period.
-		go func() {
-			shutdownCtx := context.WithoutCancel(ctx)
-			if drain := s.oldGraphServerDrainTimeout(); drain > 0 {
-				var cancel context.CancelFunc
-				shutdownCtx, cancel = context.WithTimeout(shutdownCtx, drain)
-				defer cancel()
-			}
-			if err := old.Shutdown(shutdownCtx); err != nil {
-				s.logger.Error("Failed to shutdown old graph server", zap.Error(err))
-			}
-		}()
-		return
-	}
-
-	if err := old.Shutdown(ctx); err != nil {
-		s.logger.Error("Failed to shutdown old graph", zap.Error(err))
+	if oldState != nil && oldState.graphServer != nil {
+		if err := oldState.graphServer.Shutdown(ctx); err != nil {
+			s.logger.Error("Failed to shutdown old graph", zap.Error(err))
+		}
 	}
 }
-
-// oldGraphServerDrainTimeout bounds the async old-graph-server in-flight drain on a
-// config swap. It uses the configured router grace_period; if that is unset (<=0) it
-// falls back to defaultOldGraphServerDrainTimeout so the drain is never unbounded —
-// an unbounded drain is exactly what froze config reloads (ticket #3286).
-func (s *server) oldGraphServerDrainTimeout() time.Duration {
-	if s.gracePeriod > 0 {
-		return s.gracePeriod
-	}
-	return defaultOldGraphServerDrainTimeout
-}
-
-// defaultOldGraphServerDrainTimeout is the fallback drain bound when grace_period is
-// unset. Chosen above the default subgraph request_timeout (60s) so a well-behaved
-// in-flight request can finish before the old server is abandoned.
-const defaultOldGraphServerDrainTimeout = 90 * time.Second
 
 // listenAndServe starts the server using the pre-bound listener and blocks until shutdown.
 // This method is called in a goroutine; the port was already bound in newServer().

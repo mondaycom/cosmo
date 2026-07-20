@@ -823,7 +823,6 @@ func (r *Router) NewServer(ctx context.Context) (Server, error) {
 		livenessCheckPath:  r.livenessCheckPath,
 		readinessCheckPath: r.readinessCheckPath,
 		healthCheckPath:    r.healthCheckPath,
-		gracePeriod:        r.routerGracePeriod,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
@@ -1539,7 +1538,6 @@ func (r *Router) Start(ctx context.Context) error {
 		livenessCheckPath:  r.livenessCheckPath,
 		readinessCheckPath: r.readinessCheckPath,
 		healthCheckPath:    r.healthCheckPath,
-		gracePeriod:        r.routerGracePeriod,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)

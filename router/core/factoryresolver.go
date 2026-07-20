@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/buger/jsonparser"
@@ -80,10 +79,6 @@ type DefaultFactoryResolver struct {
 	transportFactory              ApiTransportFactory
 	defaultSubgraphRequestTimeout time.Duration
 	subscriptionClientOptions     []graphql_datasource.SubscriptionClientOption
-	useNoopSubscriptionClient     bool
-
-	subscriptionClient     graphql_datasource.GraphQLSubscriptionClient
-	subscriptionClientOnce sync.Once
 }
 
 func NewDefaultFactoryResolver(
@@ -137,9 +132,7 @@ func NewDefaultFactoryResolver(
 		graphql_datasource.WithLogger(factoryLogger),
 	}
 
-	useNoopSubscriptionClient := false
 	if subscriptionClientOptions != nil {
-		useNoopSubscriptionClient = subscriptionClientOptions.UseNoopClient
 		if subscriptionClientOptions.PingInterval > 0 {
 			options = append(options, graphql_datasource.WithPingInterval(subscriptionClientOptions.PingInterval))
 		}
@@ -172,7 +165,6 @@ func NewDefaultFactoryResolver(
 		transportFactory:              transportFactory,
 		defaultSubgraphRequestTimeout: transportOptions.SubgraphTransportOptions.RequestTimeout,
 		subscriptionClientOptions:     options,
-		useNoopSubscriptionClient:     useNoopSubscriptionClient,
 	}
 }
 
@@ -210,17 +202,10 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 }
 
 func (d *DefaultFactoryResolver) subscriptionClientForFactory() graphql_datasource.GraphQLSubscriptionClient {
-	if mondaytweaks.ShareUpstreamSubscriptionClient.Load() {
-		return d.sharedSubscriptionClient()
-	}
 	return d.newSubscriptionClient()
 }
 
 func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.GraphQLSubscriptionClient {
-	if d.useNoopSubscriptionClient {
-		return noopGraphQLSubscriptionClientInstance
-	}
-
 	if d.transportFactory == nil || d.baseTransport == nil {
 		return graphql_datasource.NewGraphQLSubscriptionClient(
 			d.engineCtx,
@@ -244,42 +229,6 @@ func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.Grap
 			graphql_datasource.WithStreamingClient(streamingClient),
 		}, d.subscriptionClientOptions...)...,
 	)
-}
-
-func (d *DefaultFactoryResolver) sharedSubscriptionClient() graphql_datasource.GraphQLSubscriptionClient {
-	d.subscriptionClientOnce.Do(func() {
-		if d.useNoopSubscriptionClient {
-			d.subscriptionClient = noopGraphQLSubscriptionClientInstance
-			return
-		}
-
-		if d.transportFactory == nil || d.baseTransport == nil {
-			d.subscriptionClient = graphql_datasource.NewGraphQLSubscriptionClient(
-				d.engineCtx,
-				d.subscriptionClientOptions...,
-			)
-			return
-		}
-
-		defaultHTTPClient := &http.Client{
-			Timeout:   d.defaultSubgraphRequestTimeout,
-			Transport: d.transportFactory.RoundTripper(d.baseTransport),
-		}
-
-		streamingClient := &http.Client{
-			Transport: d.transportFactory.RoundTripper(d.baseTransport),
-		}
-
-		d.subscriptionClient = graphql_datasource.NewGraphQLSubscriptionClient(
-			d.engineCtx,
-			append([]graphql_datasource.SubscriptionClientOption{
-				graphql_datasource.WithUpgradeClient(defaultHTTPClient),
-				graphql_datasource.WithStreamingClient(streamingClient),
-			}, d.subscriptionClientOptions...)...,
-		)
-	})
-
-	return d.subscriptionClient
 }
 
 func (d *DefaultFactoryResolver) ResolveStaticFactory() (factory plan.PlannerFactory[staticdatasource.Configuration], err error) {

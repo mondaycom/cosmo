@@ -11,7 +11,6 @@ import (
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/grpcconnector"
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	pubsub_datasource "github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
@@ -63,7 +62,6 @@ type ExecutorBuildOptions struct {
 	TraceClientRequired            bool
 	PluginsEnabled                 bool
 	InstanceData                   InstanceData
-	WebSocketConfiguration         *config.WebSocketConfiguration
 }
 
 func (b *ExecutorConfigurationBuilder) Build(ctx context.Context, opts *ExecutorBuildOptions) (*Executor, []pubsub_datasource.Provider, error) {
@@ -231,14 +229,6 @@ func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Con
 		subscriptionClientOptions = &SubscriptionClientOptions{}
 	}
 	resolvedSubscriptionClientOptions := *subscriptionClientOptions
-	if mondaytweaks.UseNoopUpstreamSubscriptionClientWhenUnused.Load() {
-		resolvedSubscriptionClientOptions.UseNoopClient = shouldUseNoopUpstreamSubscriptionClient(
-			opts.EngineConfig.GetGraphqlSchema(),
-			opts.EngineConfig,
-			opts.RouterEngineConfig.Events,
-			opts.WebSocketConfiguration,
-		)
-	}
 
 	loader := NewLoader(ctx, b.trackUsageInfo, NewDefaultFactoryResolver(
 		ctx,
