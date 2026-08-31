@@ -260,7 +260,13 @@
     "Enabled": false,
     "Server": {
       "ListenAddr": "localhost:5025",
-      "BaseURL": "http://localhost:5025"
+      "BaseURL": "http://localhost:5025",
+      "Version": "1.0.0",
+      "Title": "Cosmo Graph",
+      "Description": "Federated graph exposed via MCP.",
+      "Discover": {
+        "Instructions": "Use the operation tools to interact with the graph."
+      }
     },
     "Storage": {
       "ProviderID": "mcp"
@@ -278,6 +284,7 @@
       "Enabled": false,
       "JWKS": null,
       "AuthorizationServerURL": "",
+      "AuthorizationServerURLs": null,
       "Scopes": {
         "Initialize": null,
         "ToolsList": null,
@@ -289,7 +296,10 @@
       "ScopeChallengeIncludeTokenScopes": false,
       "MaxScopeCombinations": 2048
     },
-    "ResourceDocumentation": ""
+    "ResourceDocumentation": "",
+    "OutputSchema": {
+      "Enabled": true
+    }
   },
   "ConnectRPC": {
     "Enabled": false,
@@ -828,9 +838,13 @@
         }
       ]
     },
+    "SkipUnavailableProviders": false,
     "Handlers": {
       "OnReceiveEvents": {
         "MaxConcurrentHandlers": 100,
+        "HandlerTimeout": 5000000000
+      },
+      "BeforeEventsDispatch": {
         "HandlerTimeout": 5000000000
       }
     }
@@ -848,6 +862,16 @@
     "ItemDelay": 0,
     "Timeout": 30000000000,
     "InMemoryFallback": true
+  },
+  "ResponseCache": {
+    "Enabled": true,
+    "FallbackTTL": 30000000000,
+    "KeyPrefix": "response_cache_test:",
+    "Storage": {
+      "Provider": "redis",
+      "ProviderID": "my_redis",
+      "MaxEntries": 2048
+    }
   },
   "RouterConfigPath": "latest.json",
   "RouterRegistration": true,
@@ -975,6 +999,8 @@
     "EnableRequireFetchReasons": false,
     "SubscriptionFetchTimeout": 30000000000,
     "EnableDefer": false,
+    "EnableMultiFetch": false,
+    "EnableScheduleFetches": false,
     "WebSocketServerReadTimeout": 5000000000,
     "WebSocketServerWriteTimeout": 10000000000,
     "WebSocketServerPollTimeout": 1000000000,
@@ -986,6 +1012,7 @@
     "WebSocketClientAckTimeout": 30000000000,
     "ValidateRequiredExternalFields": false,
     "RelaxSubgraphOperationFieldSelectionMergingNullability": false,
+    "AllowStringLiteralsForEnums": false,
     "ValidateInlineArguments": {
       "Mode": "off",
       "EnforceHTTPStatusCode": 400,

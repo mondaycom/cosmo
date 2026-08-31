@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"time"
 
@@ -231,7 +232,10 @@ func (p *OperationPlanner) planOperation(content string, name string, includeQue
 	}
 
 	// postprocess query plan to get its final state
-	post := postprocess.NewProcessor(postprocess.CollectDataSourceInfo())
+	post := postprocess.NewProcessor(append(
+		slices.Clone(p.executor.PostprocessorOptions),
+		postprocess.CollectDataSourceInfo(),
+	)...)
 	post.Process(preparedPlan)
 
 	return &planWithMetaData{

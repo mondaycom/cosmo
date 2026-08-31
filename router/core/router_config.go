@@ -1,6 +1,7 @@
 package core
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/profile/pyroscope"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 	rtrace "github.com/wundergraph/cosmo/router/pkg/trace"
+	"github.com/wundergraph/graphql-go-tools/v2/pkg/caching"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -30,10 +32,11 @@ import (
 )
 
 type subscriptionHooks struct {
-	onCreate        onCreateHooks
-	onStart         onStartHooks
-	onPublishEvents onPublishEventsHooks
-	onReceiveEvents onReceiveEventsHooks
+	onCreate             onCreateHooks
+	onStart              onStartHooks
+	onPublishEvents      onPublishEventsHooks
+	onReceiveEvents      onReceiveEventsHooks
+	beforeEventsDispatch beforeEventsDispatchHooks
 }
 
 type onCreateHooks struct {
@@ -52,6 +55,16 @@ type onReceiveEventsHooks struct {
 	handlers              []func(ctx StreamReceiveEventHandlerContext, events datasource.StreamEvents) (datasource.StreamEvents, error)
 	maxConcurrentHandlers int
 	timeout               time.Duration
+}
+
+type beforeEventsDispatchHooks struct {
+	handlers []func(ctx StreamBeforeEventsDispatchHandlerContext, events datasource.StreamEvents) (datasource.StreamEvents, error)
+	timeout  time.Duration
+}
+
+type ResponseCache interface {
+	caching.Cache
+	io.Closer
 }
 
 type Config struct {
@@ -121,6 +134,8 @@ type Config struct {
 	accessController                *AccessController
 	retryOptions                    retrytransport.RetryOptions
 	redisClient                     rd.RDCloser
+	responseCacheConfig             *config.ResponseCacheConfiguration
+	responseCache                   ResponseCache
 	mcpServer                       *mcpserver.GraphQLSchemaServer
 	connectRPCServer                *connectrpc.Server
 	processStartTime                time.Time

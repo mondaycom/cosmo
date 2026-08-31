@@ -128,6 +128,7 @@ type OperationProcessorOptions struct {
 	ApolloRouterCompatibilityFlags                         config.ApolloRouterCompatibilityFlags
 	DisableExposingVariablesContentOnValidationError       bool
 	RelaxSubgraphOperationFieldSelectionMergingNullability bool
+	AllowStringLiteralsForEnums                            bool
 	ComplexityLimits                                       *config.ComplexityLimits
 	CostControl                                            *config.CostControl
 	ParserTokenizerLimits                                  astparser.TokenizerLimits
@@ -455,8 +456,7 @@ func (o *OperationKit) FetchPersistedOperation(ctx context.Context, clientInfo *
 	}
 	if fromCache {
 		if fromCacheHasTTL, _ := o.persistedOperationCacheKeyHasTtl(clientInfo.Name, includeOperationName); fromCacheHasTTL {
-			// if it is an APQ request, we need to save it again to renew the TTL expiration
-			if err = o.operationProcessor.persistedOperationClient.SaveOperation(ctx, clientInfo.Name, o.parsedOperation.GraphQLRequestExtensions.PersistedQuery.Sha256Hash, o.parsedOperation.NormalizedRepresentation); err != nil {
+			if err := o.renewAPQTTL(ctx, clientInfo.Name); err != nil {
 				return false, false, err
 			}
 		}
@@ -508,6 +508,23 @@ func (o *OperationKit) FetchPersistedOperation(ctx context.Context, clientInfo *
 	}
 
 	return false, isAPQ, nil
+}
+
+func (o *OperationKit) renewAPQTTL(ctx context.Context, clientName string) error {
+	sha256Hash := o.parsedOperation.GraphQLRequestExtensions.PersistedQuery.Sha256Hash
+	// Reload the raw APQ body because normalization can remove conditional fields.
+	operationBody, isAPQ, err := o.operationProcessor.persistedOperationClient.PersistedOperation(ctx, clientName, sha256Hash)
+	if err != nil {
+		return err
+	}
+	if !isAPQ {
+		return nil
+	}
+	if len(operationBody) == 0 {
+		return nil
+	}
+
+	return o.operationProcessor.persistedOperationClient.SaveOperation(ctx, clientName, sha256Hash, string(operationBody))
 }
 
 const (
@@ -1563,6 +1580,7 @@ type parseKitOptions struct {
 	apolloRouterCompatibilityFlags                         config.ApolloRouterCompatibilityFlags
 	disableExposingVariablesContentOnValidationError       bool
 	relaxSubgraphOperationFieldSelectionMergingNullability bool
+	allowStringLiteralsForEnums                            bool
 	enableDefer                                            bool
 	validateInlineArguments                                config.ValidateInlineArguments
 }
@@ -1638,6 +1656,9 @@ func createOperationValidator(options *parseKitOptions) *astvalidation.Operation
 	if options.relaxSubgraphOperationFieldSelectionMergingNullability {
 		opts = append(opts, astvalidation.WithRelaxFieldSelectionMergingNullability())
 	}
+	if options.allowStringLiteralsForEnums {
+		opts = append(opts, astvalidation.WithAllowStringLiteralsForEnums())
+	}
 	return astvalidation.DefaultOperationValidator(opts...)
 }
 
@@ -1662,6 +1683,7 @@ func NewOperationProcessor(opts OperationProcessorOptions) *OperationProcessor {
 			apolloRouterCompatibilityFlags:                         opts.ApolloRouterCompatibilityFlags,
 			disableExposingVariablesContentOnValidationError:       opts.DisableExposingVariablesContentOnValidationError,
 			relaxSubgraphOperationFieldSelectionMergingNullability: opts.RelaxSubgraphOperationFieldSelectionMergingNullability,
+			allowStringLiteralsForEnums:                            opts.AllowStringLiteralsForEnums,
 			validateInlineArguments:                                opts.ValidateInlineArguments,
 		},
 	}

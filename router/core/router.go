@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -59,6 +60,8 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/mcpserver"
 	rmetric "github.com/wundergraph/cosmo/router/pkg/metric"
 	"github.com/wundergraph/cosmo/router/pkg/otel/otelconfig"
+	inmemorycache "github.com/wundergraph/cosmo/router/pkg/responsecaching/cache/in_memory"
+	rediscache "github.com/wundergraph/cosmo/router/pkg/responsecaching/cache/redis"
 	"github.com/wundergraph/cosmo/router/pkg/statistics"
 	rtrace "github.com/wundergraph/cosmo/router/pkg/trace"
 	"github.com/wundergraph/cosmo/router/pkg/trace/attributeprocessor"
@@ -103,6 +106,9 @@ type (
 		usage                 UsageTracker
 		headerPropagation     *HeaderPropagation
 		reloadPersistentState *ReloadPersistentState
+		connectionMetricsLock sync.Mutex
+		connectionMetrics     *rmetric.ConnectionMetrics
+		traceDialer           *TraceDialer
 	}
 
 	UsageTracker interface {
@@ -278,6 +284,10 @@ func NewRouter(ctx context.Context, opts ...Option) (*Router, error) {
 
 	if r.subscriptionHooks.onReceiveEvents.timeout == 0 {
 		r.subscriptionHooks.onReceiveEvents.timeout = 5 * time.Second
+	}
+
+	if r.subscriptionHooks.beforeEventsDispatch.timeout == 0 {
+		r.subscriptionHooks.beforeEventsDispatch.timeout = 5 * time.Second
 	}
 
 	if r.corsOptions == nil {
@@ -769,6 +779,10 @@ func (r *Router) initModules(ctx context.Context) error {
 			r.subscriptionHooks.onReceiveEvents.handlers = append(r.subscriptionHooks.onReceiveEvents.handlers, handler.OnReceiveEvents)
 		}
 
+		if handler, ok := moduleInstance.(StreamBeforeEventsDispatchHandler); ok {
+			r.subscriptionHooks.beforeEventsDispatch.handlers = append(r.subscriptionHooks.beforeEventsDispatch.handlers, handler.BeforeEventsDispatch)
+		}
+
 		if handler, ok := moduleInstance.(SubscriptionOnCreateHandler); ok {
 			r.subscriptionHooks.onCreate.handlers = append(r.subscriptionHooks.onCreate.handlers, handler.SubscriptionOnCreate)
 		}
@@ -915,6 +929,10 @@ func (r *Router) bootstrap(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create redis client: %w", err)
 		}
+	}
+
+	if err := r.setupResponseCache(ctx); err != nil {
+		return err
 	}
 
 	if err := r.startMCPServer(ctx); err != nil {
@@ -1163,6 +1181,108 @@ func (r *Router) setupTelemetry(ctx context.Context) error {
 	return nil
 }
 
+// setupResponseCache builds the response cache when it is enabled. The storage
+// provider decides what it is built on: a redis instance declared under
+// storage_providers.redis and shared with every other replica, or a cache held
+// in this process alone.
+func (r *Router) setupResponseCache(ctx context.Context) error {
+	if r.responseCacheConfig == nil || !r.responseCacheConfig.Enabled {
+		return nil
+	}
+
+	// Validate the TTL during startup to avoid additional checks during execution.
+	if r.responseCacheConfig.FallbackTTL <= 0 {
+		return fmt.Errorf("response cache is enabled but its fallback_ttl is %s, which must be greater than zero", r.responseCacheConfig.FallbackTTL)
+	}
+
+	switch provider := r.responseCacheConfig.Storage.Provider; provider {
+	case "", config.ResponseCacheStorageProviderRedis:
+		return r.setupRedisResponseCache(ctx)
+	case config.ResponseCacheStorageProviderMemory:
+		return r.setupInMemoryResponseCache()
+	default:
+		return fmt.Errorf("response cache storage provider %q is not supported, use %q or %q",
+			provider,
+			config.ResponseCacheStorageProviderRedis,
+			config.ResponseCacheStorageProviderMemory,
+		)
+	}
+}
+
+// setupInMemoryResponseCache builds a response cache held in this process. Nothing
+// is shared with any other replica and nothing survives a restart, which is the
+// whole difference from the redis backed one.
+func (r *Router) setupInMemoryResponseCache() error {
+	// The size is the adapter's to accept or refuse, bounds included, so it is
+	// passed on as it is rather than checked twice here against a second copy of
+	// the same limit.
+	cache, err := inmemorycache.NewInMemoryCache(r.responseCacheConfig.Storage.MaxEntries)
+	if err != nil {
+		return fmt.Errorf("failed to create response cache: %w", err)
+	}
+
+	// Owned from here on by r.responseCache, which Shutdown closes.
+	r.responseCache = cache
+
+	r.logger.Info("Response cache enabled",
+		zap.Duration("fallback_ttl", r.responseCacheConfig.FallbackTTL),
+		zap.String("storage_provider", string(config.ResponseCacheStorageProviderMemory)),
+		zap.Int64("max_entries", r.responseCacheConfig.Storage.MaxEntries),
+	)
+
+	return nil
+}
+
+// setupRedisResponseCache builds a response cache on a redis instance declared
+// under storage_providers.redis.
+func (r *Router) setupRedisResponseCache(ctx context.Context) error {
+	providerID := r.responseCacheConfig.Storage.ProviderID
+	if providerID == "" {
+		return fmt.Errorf("response cache is enabled with the %q storage provider but no storage provider_id is configured; configure one, or set the storage provider to %q to cache in this router's memory instead",
+			config.ResponseCacheStorageProviderRedis,
+			config.ResponseCacheStorageProviderMemory,
+		)
+	}
+
+	provider, ok := r.providerRegistry.Redis(providerID)
+	if !ok {
+		return fmt.Errorf("response cache references unknown redis storage provider %q", providerID)
+	}
+
+	client, err := rd.NewRedisCloser(&rd.RedisCloserOptions{
+		URLs:           provider.URLs,
+		ClusterEnabled: provider.ClusterEnabled,
+		Logger:         r.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create redis client for response cache: %w", err)
+	}
+
+	cache, err := rediscache.NewRedisCache(ctx, client, r.responseCacheConfig.KeyPrefix)
+	if err != nil {
+		// Ownership of the client only passes to the cache once there is a cache,
+		// so on this path it is still ours and has to be closed here or it leaks
+		// along with its connection pool.
+		if closeErr := client.Close(); closeErr != nil {
+			r.logger.Error("failed to close redis client after response cache setup failed", zap.Error(closeErr))
+		}
+		return fmt.Errorf("failed to create response cache: %w", err)
+	}
+
+	// The cache owns the client from here on and closes it with itself, and
+	// Shutdown closes the cache.
+	r.responseCache = cache
+
+	r.logger.Info("Response cache enabled",
+		zap.Duration("fallback_ttl", r.responseCacheConfig.FallbackTTL),
+		zap.String("storage_provider", string(config.ResponseCacheStorageProviderRedis)),
+		zap.String("key_prefix", r.responseCacheConfig.KeyPrefix),
+		zap.String("storage_provider_id", providerID),
+	)
+
+	return nil
+}
+
 // startMCPServer initializes and starts the MCP server if enabled.
 func (r *Router) startMCPServer(ctx context.Context) error {
 	if !r.mcp.Enabled {
@@ -1200,7 +1320,12 @@ func (r *Router) startMCPServer(ctx context.Context) error {
 		mcpserver.WithEnableArbitraryOperations(r.mcp.EnableArbitraryOperations),
 		mcpserver.WithExposeSchema(r.mcp.ExposeSchema),
 		mcpserver.WithOmitToolNamePrefix(r.mcp.OmitToolNamePrefix),
+		mcpserver.WithOutputSchemaEnabled(r.mcp.OutputSchema.Enabled),
 		mcpserver.WithStateless(r.mcp.Session.Stateless),
+		mcpserver.WithInstructions(r.mcp.Server.Discover.Instructions),
+		mcpserver.WithServerVersion(cmp.Or(r.mcp.Server.Version, Version)),
+		mcpserver.WithServerTitle(r.mcp.Server.Title),
+		mcpserver.WithServerDescription(r.mcp.Server.Description),
 	}
 
 	if r.corsOptions != nil {
@@ -1594,7 +1719,7 @@ func (r *Router) Start(ctx context.Context) error {
 	}
 
 	/**
-	* Server logging after features has been initialized / disabled
+	 * Server logging after features has been initialized / disabled
 	 */
 
 	if r.localhostFallbackInsideDocker && docker.Inside() {
@@ -1872,6 +1997,10 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	if subErr := r.shutdownConnectionMetrics(ctx); subErr != nil {
+		err.Append(fmt.Errorf("failed to shutdown connection metrics: %w", subErr))
+	}
+
 	var wg sync.WaitGroup
 
 	if r.prometheusServer != nil {
@@ -1942,6 +2071,14 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		wg.Go(func() {
 			if closeErr := r.redisClient.Close(); closeErr != nil {
 				err.Append(fmt.Errorf("failed to close redis client: %w", closeErr))
+			}
+		})
+	}
+
+	if r.responseCache != nil {
+		wg.Go(func() {
+			if closeErr := r.responseCache.Close(); closeErr != nil {
+				err.Append(fmt.Errorf("failed to close response cache: %w", closeErr))
 			}
 		})
 	}
@@ -2296,6 +2433,12 @@ func WithRateLimitConfig(cfg *config.RateLimitConfiguration) Option {
 	}
 }
 
+func WithResponseCache(cfg *config.ResponseCacheConfiguration) Option {
+	return func(r *Router) {
+		r.responseCacheConfig = cfg
+	}
+}
+
 func WithLocalhostFallbackInsideDocker(fallback bool) Option {
 	return func(r *Router) {
 		r.localhostFallbackInsideDocker = fallback
@@ -2620,10 +2763,86 @@ func WithStreamsHandlerConfiguration(cfg config.StreamsHandlerConfiguration) Opt
 	return func(r *Router) {
 		r.subscriptionHooks.onReceiveEvents.maxConcurrentHandlers = cfg.OnReceiveEvents.MaxConcurrentHandlers
 		r.subscriptionHooks.onReceiveEvents.timeout = cfg.OnReceiveEvents.HandlerTimeout
+		r.subscriptionHooks.beforeEventsDispatch.timeout = cfg.BeforeEventsDispatch.HandlerTimeout
 	}
 }
 
 type ProxyFunc func(req *http.Request) (*url.URL, error)
+
+// connectionStatsEnabled reports whether any exporter asks for subgraph
+// connection statistics.
+func (r *Router) connectionStatsEnabled() bool {
+	return r.metricConfig.OpenTelemetry.ConnectionStats ||
+		r.metricConfig.Prometheus.ConnectionStats ||
+		r.metricConfig.OpenTelemetry.NetworkStats ||
+		r.metricConfig.Prometheus.NetworkStats
+}
+
+// connectionTraceDialer returns the router-scoped TraceDialer, or nil when
+// connection statistics are disabled. Router-scoped because a reused graph mux
+// keeps the transports, and therefore the stats, of the server that built it.
+// Unlocked: only newGraphServer touches the dialer, and it never runs concurrently.
+func (r *Router) connectionTraceDialer() *TraceDialer {
+	if !r.connectionStatsEnabled() {
+		return nil
+	}
+
+	if r.traceDialer == nil {
+		r.traceDialer = NewTraceDialer()
+	}
+	return r.traceDialer
+}
+
+// connectionMetricStore returns the router-scoped connection metric store, or
+// nil when traceDialer is nil. Created on the first graph server rather than in
+// setupTelemetry: it seeds the max-connections gauge from the transports, which
+// do not exist yet. Shut down in Router.Shutdown.
+func (r *Router) connectionMetricStore(ctx context.Context, traceDialer *TraceDialer) (*rmetric.ConnectionMetrics, error) {
+	if traceDialer == nil {
+		return nil, nil
+	}
+
+	r.connectionMetricsLock.Lock()
+	defer r.connectionMetricsLock.Unlock()
+
+	// Check if the router is shutting down to prevent creating asynchronous metrics.
+	if r.shutdown.Load() {
+		return nil, nil
+	}
+
+	if r.connectionMetrics == nil {
+		store, err := rmetric.NewConnectionMetricStore(
+			r.logger,
+			nil,
+			r.otlpMeterProvider,
+			r.promMeterProvider,
+			r.metricConfig,
+			traceDialer.connectionPoolStats,
+		)
+		if err != nil {
+			return nil, err
+		}
+		r.connectionMetrics = store
+	}
+
+	// Ensure to record max connections on each graph server creation.
+	r.connectionMetrics.RecordMaxConnections(ctx, traceDialer.connectionPoolStats)
+
+	return r.connectionMetrics, nil
+}
+
+// shutdownConnectionMetrics unregisters the store. Must run after r.shutdown is
+// set, so that a config reload still inside newGraphServer cannot create a new
+// store afterwards.
+func (r *Router) shutdownConnectionMetrics(ctx context.Context) error {
+	r.connectionMetricsLock.Lock()
+	defer r.connectionMetricsLock.Unlock()
+
+	if r.connectionMetrics == nil {
+		return nil
+	}
+	return r.connectionMetrics.Shutdown(ctx)
+}
 
 func newHTTPTransport(opts *TransportRequestOptions, proxy ProxyFunc, traceDialer *TraceDialer, subgraph string, clientTLS *tls.Config) *http.Transport {
 	dialer := &net.Dialer{
