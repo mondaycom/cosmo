@@ -1900,6 +1900,8 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 				ll.Error("Failed to update server with new config", zap.Error(err))
 				return
 			}
+			r.staticExecutionConfig = cfg
+			r.trackExecutionConfigUsage(cfg, true)
 		},
 	})
 

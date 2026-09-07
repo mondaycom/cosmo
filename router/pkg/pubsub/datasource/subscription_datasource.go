@@ -52,7 +52,12 @@ func (s *PubSubSubscriptionDataSource[C]) Start(ctx *resolve.Context, header htt
 		zap.String("field_name", conf.RootFieldName()),
 	)
 
-	return s.pubSub.Subscribe(ctx.Context(), conf, NewSubscriptionEventUpdater(conf, s.hooks, updater, logger, s.eventBuilder))
+	// The header set is part of the trigger identity (the resolver hashes it into the
+	// trigger ID), so adapters that authenticate per subscriber can use it without two
+	// subscribers sharing a trigger.
+	subscribeCtx := WithRequestHeader(ctx.Context(), header)
+
+	return s.pubSub.Subscribe(subscribeCtx, conf, NewSubscriptionEventUpdater(conf, s.hooks, updater, logger, s.eventBuilder))
 }
 
 func (s *PubSubSubscriptionDataSource[C]) SubscriptionOnStart(ctx resolve.StartupHookContext, input []byte) (err error) {

@@ -26,6 +26,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/klauspost/compress/gzip"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	"github.com/wundergraph/cosmo/router/pkg/routerconfig"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -725,9 +726,17 @@ func (s *graphMux) buildOperationCaches(srv *graphServer) (computeSha256 bool, e
 	// different inputs that would generate the same execution plan
 
 	if srv.engineExecutionConfiguration.ExecutionPlanCacheSize > 0 {
+		// planCacheMaxCost is the ExecutionPlanCacheSize entry count by default. When
+		// SizeAwarePlanCache is enabled the cache instead evicts by estimated retained heap
+		// (see estimatePlanCacheCost / planCacheCost), so MaxCost becomes a byte budget while
+		// NumCounters stays keyed to the expected entry count for TinyLFU admission.
+		planCacheMaxCost := srv.engineExecutionConfiguration.ExecutionPlanCacheSize
+		if sizeAwarePlanCacheEnabled(srv.engineExecutionConfiguration) {
+			planCacheMaxCost = srv.engineExecutionConfiguration.ExecutionPlanCacheSize * mondaytweaks.PlanCacheSizeAwareBudgetPerSlotBytes.Load()
+		}
 		planCacheConfig := &ristretto.Config[uint64, *planWithMetaData]{
 			Metrics:            srv.metricConfig.OpenTelemetry.GraphqlCache || srv.metricConfig.Prometheus.GraphqlCache,
-			MaxCost:            srv.engineExecutionConfiguration.ExecutionPlanCacheSize,
+			MaxCost:            planCacheMaxCost,
 			NumCounters:        srv.engineExecutionConfiguration.ExecutionPlanCacheSize * 10,
 			IgnoreInternalCost: true,
 			BufferItems:        64,
@@ -997,15 +1006,33 @@ func (s *graphMux) Shutdown(ctx context.Context) error {
 	// cancel the graph muxes context to close its resources like websocket connections, resolvers, etc.
 	s.cancel()
 
-	s.planCache.Close()
-	s.planFallbackCache.Close()
-	s.persistedOperationCache.Close()
-	s.normalizationCache.Close()
-	s.variablesNormalizationCache.Close()
-	s.remapVariablesCache.Close()
-	s.complexityCalculationCache.Close()
-	s.validationCache.Close()
-	s.operationHashCache.Close()
+	if s.planCache != nil {
+		s.planCache.Close()
+	}
+	if s.planFallbackCache != nil {
+		s.planFallbackCache.Close()
+	}
+	if s.persistedOperationCache != nil {
+		s.persistedOperationCache.Close()
+	}
+	if s.normalizationCache != nil {
+		s.normalizationCache.Close()
+	}
+	if s.variablesNormalizationCache != nil {
+		s.variablesNormalizationCache.Close()
+	}
+	if s.remapVariablesCache != nil {
+		s.remapVariablesCache.Close()
+	}
+	if s.complexityCalculationCache != nil {
+		s.complexityCalculationCache.Close()
+	}
+	if s.validationCache != nil {
+		s.validationCache.Close()
+	}
+	if s.operationHashCache != nil {
+		s.operationHashCache.Close()
+	}
 
 	var err error
 
@@ -1500,22 +1527,30 @@ func (s *graphServer) buildGraphMux(
 		return nil, fmt.Errorf("failed to process retry options: %w", err)
 	}
 
+	subscriptionClientOptions := &SubscriptionClientOptions{
+		PingInterval:              s.engineExecutionConfiguration.WebSocketClientPingInterval,
+		PingTimeout:               s.engineExecutionConfiguration.WebSocketClientPingTimeout,
+		WriteTimeout:              s.engineExecutionConfiguration.WebSocketClientWriteTimeout,
+		AckTimeout:                s.engineExecutionConfiguration.WebSocketClientAckTimeout,
+		ReadLimit:                 int64(s.engineExecutionConfiguration.WebSocketClientReadLimit),
+		DefaultErrorExtensionCode: s.subgraphErrorPropagation.DefaultExtensionCode,
+	}
+	// Client-facing WebSocket subscriptions are disabled; skip upstream ping loops
+	// that would otherwise start one goroutine per subgraph datasource factory.
+	if mondaytweaks.DisableUpstreamSubscriptionPingWhenClientWebSocketDisabled.Load() &&
+		s.webSocketConfiguration != nil && !s.webSocketConfiguration.Enabled {
+		subscriptionClientOptions.PingInterval = 0
+	}
+
 	ecb := &ExecutorConfigurationBuilder{
-		introspection:    s.introspection,
-		baseURL:          s.baseURL,
-		baseTripper:      s.baseTransport,
-		subgraphTrippers: subgraphTippers,
-		pluginHost:       s.connector,
-		logger:           s.logger,
-		trackUsageInfo:   s.graphqlMetricsConfig.Enabled || s.metricConfig.Prometheus.PromSchemaFieldUsage.Enabled,
-		subscriptionClientOptions: &SubscriptionClientOptions{
-			PingInterval:              s.engineExecutionConfiguration.WebSocketClientPingInterval,
-			PingTimeout:               s.engineExecutionConfiguration.WebSocketClientPingTimeout,
-			WriteTimeout:              s.engineExecutionConfiguration.WebSocketClientWriteTimeout,
-			AckTimeout:                s.engineExecutionConfiguration.WebSocketClientAckTimeout,
-			ReadLimit:                 int64(s.engineExecutionConfiguration.WebSocketClientReadLimit),
-			DefaultErrorExtensionCode: s.subgraphErrorPropagation.DefaultExtensionCode,
-		},
+		introspection:             s.introspection,
+		baseURL:                   s.baseURL,
+		baseTripper:               s.baseTransport,
+		subgraphTrippers:          subgraphTippers,
+		pluginHost:                s.connector,
+		logger:                    s.logger,
+		trackUsageInfo:            s.graphqlMetricsConfig.Enabled || s.metricConfig.Prometheus.PromSchemaFieldUsage.Enabled,
+		subscriptionClientOptions: subscriptionClientOptions,
 		transportOptions: &TransportOptions{
 			SubgraphTransportOptions:      s.subgraphTransportOptions,
 			PreHandlers:                   s.preOriginHandlers,
@@ -1607,7 +1642,7 @@ func (s *graphServer) buildGraphMux(
 		}
 	}
 
-	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride)
+	operationPlanner := NewOperationPlanner(executor, gm.planCache, gm.planFallbackCache, s.planningDurationOverride, sizeAwarePlanCacheEnabled(s.engineExecutionConfiguration))
 
 	// We support the MCP only on the base graph. Feature flags are not supported yet.
 	if opts.IsBaseGraph() && s.mcpServer != nil {

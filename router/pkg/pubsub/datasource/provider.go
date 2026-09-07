@@ -52,9 +52,10 @@ type ProviderBuilder[P, E any] interface {
 type ProviderType string
 
 const (
-	ProviderTypeNats  ProviderType = "nats"
-	ProviderTypeKafka ProviderType = "kafka"
-	ProviderTypeRedis ProviderType = "redis"
+	ProviderTypeNats   ProviderType = "nats"
+	ProviderTypeKafka  ProviderType = "kafka"
+	ProviderTypeRedis  ProviderType = "redis"
+	ProviderTypePusher ProviderType = "pusher"
 )
 
 // StreamEvents is a list of stream events coming from or going to event providers.

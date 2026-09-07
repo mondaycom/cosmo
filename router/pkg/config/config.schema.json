@@ -3314,6 +3314,128 @@
                   }
                 }
               }
+            },
+            "pusher": {
+              "type": "array",
+              "description": "Configuration used by the EDFS provider to subscribe to Pusher Channels.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "app_key"],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "The provider ID. The provider ID is used to identify the provider in the configuration."
+                  },
+                  "app_key": {
+                    "type": "string",
+                    "description": "The Pusher application key."
+                  },
+                  "cluster": {
+                    "type": "string",
+                    "description": "The Pusher cluster, e.g. \"mt1\". Used to build the WebSocket URL when ws_url is not set."
+                  },
+                  "ws_url": {
+                    "type": "string",
+                    "description": "Overrides the WebSocket URL derived from the cluster. Useful for tests and self-hosted gateways."
+                  },
+                  "auth_endpoint": {
+                    "type": "string",
+                    "description": "The URL used to authorize private and presence channels, e.g. \"https://example.monday.com/pusher/auth\"."
+                  },
+                  "app_secret": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The Pusher application secret. When set, the router signs private channel subscriptions itself (HMAC-SHA256 of \"<socket_id>:<channel_name>\") instead of calling auth_endpoint, so no monolith session is needed. Mutually exclusive with auth_endpoint. This also skips the per-user permission check the auth endpoint performs."
+                  },
+                  "auth_headers": {
+                    "type": "object",
+                    "description": "Static headers sent with every authorization and encryption key request. Use only for headers that are not specific to a user; put a user session credential in auth_headers_from_request instead.",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "auth_headers_from_request": {
+                    "type": "array",
+                    "description": "Header names forwarded from the incoming GraphQL request to the authorization and encryption key requests, e.g. [\"Cookie\"]. The auth endpoint authorizes channels for the user behind the credential, so the credential must travel with the subscription. The router keeps one Pusher connection per distinct credential. The listed headers must also be propagated to this subgraph by the header propagation rules.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "entity_mappings": {
+                    "type": "array",
+                    "description": "Rewrite the payload of a subscription field into an entity representation, so the router resolves the requested fields from the owning subgraph instead of expecting them in the event. A field without a mapping has its payload forwarded unchanged.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["field_name", "type_name", "id_from"],
+                      "properties": {
+                        "field_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The subscription root field this mapping applies to, e.g. \"boardUpdated\"."
+                        },
+                        "type_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The entity type name emitted as __typename, e.g. \"Board\"."
+                        },
+                        "key_field": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The field of the representation the key is written to.",
+                          "default": "id"
+                        },
+                        "id_from": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "The payload keys holding the entity key, in order of preference, e.g. [\"board_id\"]. Dots address nested objects. The first key present and not null wins.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "encryption": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Payload decryption for monday encrypted channels (private-enc_ prefix).",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "If enabled, encrypted payloads are decrypted before they are delivered to the subscription.",
+                        "default": false
+                      },
+                      "encryption_key": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "A single encryption key used for every payload, whatever its enc_date. Provide it instead of keys_endpoint. Intended for local development: the monday keys rotate daily, so a pinned key stops working after a rotation."
+                      },
+                      "keys_endpoint": {
+                        "type": "string",
+                        "description": "The URL returning the encryption keys, e.g. \"https://example.monday.com/pusher/get_encryption_keys\"."
+                      },
+                      "refresh_interval": {
+                        "type": "string",
+                        "format": "go-duration",
+                        "description": "How often the encryption keys are refreshed. The period is specified as a string with a number and a unit, e.g. 10s, 1m, 1h.",
+                        "duration": {
+                          "minimum": "1s"
+                        },
+                        "default": "1h"
+                      }
+                    },
+                    "not": {
+                      "required": ["encryption_key", "keys_endpoint"]
+                    }
+                  }
+                },
+                "not": {
+                  "required": ["app_secret", "auth_endpoint"]
+                }
+              }
             }
           }
         },

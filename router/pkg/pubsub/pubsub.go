@@ -13,6 +13,7 @@ import (
 	pubsub_datasource "github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/kafka"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/nats"
+	"github.com/wundergraph/cosmo/router/pkg/pubsub/pusher"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/redis"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/plan"
 	"go.uber.org/zap"
@@ -73,13 +74,43 @@ func BuildProvidersAndDataSources(
 	var pubSubProviders []pubsub_datasource.Provider
 	var outs []plan.DataSource
 
+	// Pusher provider IDs declared in the router configuration. A kafka event whose
+	// provider ID names one of them is served by the pusher provider instead, with the
+	// kafka topics used as pusher channels. This lets a subgraph declare a pusher
+	// subscription with the published @edfs__kafkaSubscribe directive, so no custom
+	// composition build is needed.
+	pusherProviderIDs := make(map[string]struct{}, len(config.Providers.Pusher))
+	for _, provider := range config.Providers.Pusher {
+		pusherProviderIDs[provider.ID] = struct{}{}
+	}
+
 	// initialize Kafka providers and data sources
 	kafkaBuilder := kafka.NewProviderBuilder(ctx, logger, hostName, routerListenAddr)
 	kafkaDsConfsWithEvents := []dsConfAndEvents[*nodev1.KafkaEventConfiguration]{}
-	for _, dsConf := range dsConfs {
+	// Kafka events redirected to the pusher provider, keyed by data source index.
+	redirectedToPusher := make(map[int][]*nodev1.PusherEventConfiguration, len(dsConfs))
+	for i, dsConf := range dsConfs {
+		kafkaEvents := make([]*nodev1.KafkaEventConfiguration, 0, len(dsConf.Configuration.GetCustomEvents().GetKafka()))
+		for _, event := range dsConf.Configuration.GetCustomEvents().GetKafka() {
+			providerID := event.GetEngineEventConfiguration().GetProviderId()
+			if _, ok := pusherProviderIDs[providerID]; !ok {
+				kafkaEvents = append(kafkaEvents, event)
+				continue
+			}
+			logger.Info("serving kafka event with the pusher provider",
+				zap.String("provider_id", providerID),
+				zap.String("type_name", event.GetEngineEventConfiguration().GetTypeName()),
+				zap.String("field_name", event.GetEngineEventConfiguration().GetFieldName()),
+				zap.Strings("channels", event.GetTopics()),
+			)
+			redirectedToPusher[i] = append(redirectedToPusher[i], &nodev1.PusherEventConfiguration{
+				EngineEventConfiguration: event.GetEngineEventConfiguration(),
+				Channels:                 event.GetTopics(),
+			})
+		}
 		kafkaDsConfsWithEvents = append(kafkaDsConfsWithEvents, dsConfAndEvents[*nodev1.KafkaEventConfiguration]{
 			dsConf: &dsConf,
-			events: dsConf.Configuration.GetCustomEvents().GetKafka(),
+			events: kafkaEvents,
 		})
 	}
 	kafkaPubSubProviders, kafkaOuts, err := build(ctx, kafkaBuilder, config.Providers.Kafka, kafkaDsConfsWithEvents, store, hooks, logger, config.SkipUnavailableProviders)
@@ -126,6 +157,28 @@ func BuildProvidersAndDataSources(
 		pubSubProviders = append(pubSubProviders, provider)
 	}
 	outs = append(outs, redisOuts...)
+
+	// initialize Pusher providers and data sources
+	pusherBuilder := pusher.NewProviderBuilder(ctx, logger, hostName, routerListenAddr)
+	pusherDsConfsWithEvents := []dsConfAndEvents[*nodev1.PusherEventConfiguration]{}
+	for i, dsConf := range dsConfs {
+		events := dsConf.Configuration.GetCustomEvents().GetPusher()
+		if redirected := redirectedToPusher[i]; len(redirected) > 0 {
+			events = append(append([]*nodev1.PusherEventConfiguration{}, events...), redirected...)
+		}
+		pusherDsConfsWithEvents = append(pusherDsConfsWithEvents, dsConfAndEvents[*nodev1.PusherEventConfiguration]{
+			dsConf: &dsConf,
+			events: events,
+		})
+	}
+	pusherPubSubProviders, pusherOuts, err := build(ctx, pusherBuilder, config.Providers.Pusher, pusherDsConfsWithEvents, store, hooks, logger, config.SkipUnavailableProviders)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, provider := range pusherPubSubProviders {
+		pubSubProviders = append(pubSubProviders, provider)
+	}
+	outs = append(outs, pusherOuts...)
 
 	return pubSubProviders, outs, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/metric"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/kafka"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/nats"
+	"github.com/wundergraph/cosmo/router/pkg/pubsub/pusher"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/redis"
 
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
@@ -397,6 +398,7 @@ func (pg *PlanGenerator) loadConfiguration(routerConfig *nodev1.RouterConfig, lo
 	natSources := map[string]*nats.ProviderAdapter{}
 	kafkaSources := map[string]*kafka.ProviderAdapter{}
 	redisSources := map[string]*redis.ProviderAdapter{}
+	pusherSources := map[string]*pusher.ProviderAdapter{}
 	for _, ds := range routerConfig.GetEngineConfig().GetDatasourceConfigurations() {
 		if ds.GetKind() != nodev1.DataSourceKind_PUBSUB || ds.GetCustomEvents() == nil {
 			continue
@@ -424,6 +426,15 @@ func (pg *PlanGenerator) loadConfiguration(routerConfig *nodev1.RouterConfig, lo
 			if _, ok := redisSources[providerId]; !ok {
 				redisSources[providerId] = nil
 				routerEngineConfig.Events.Providers.Redis = append(routerEngineConfig.Events.Providers.Redis, config.RedisEventSource{
+					ID: providerId,
+				})
+			}
+		}
+		for _, pusherConfig := range ds.GetCustomEvents().GetPusher() {
+			providerId := pusherConfig.GetEngineEventConfiguration().GetProviderId()
+			if _, ok := pusherSources[providerId]; !ok {
+				pusherSources[providerId] = nil
+				routerEngineConfig.Events.Providers.Pusher = append(routerEngineConfig.Events.Providers.Pusher, config.PusherEventSource{
 					ID: providerId,
 				})
 			}

@@ -25,6 +25,7 @@ import {
   EDFS_NATS_STREAM_CONFIGURATION,
   EDFS_NATS_SUBSCRIBE,
   EDFS_REDIS_PUBLISH,
+  EDFS_PUSHER_SUBSCRIBE,
   EDFS_REDIS_SUBSCRIBE,
   ENUM_UPPER,
   ENUM_VALUE_UPPER,
@@ -485,6 +486,36 @@ export const EDFS_REDIS_SUBSCRIBE_DEFINITION: DirectiveDefinitionNode = {
   kind: Kind.DIRECTIVE_DEFINITION,
   locations: [stringToNameNode(FIELD_DEFINITION_UPPER)],
   name: stringToNameNode(EDFS_REDIS_SUBSCRIBE),
+  repeatable: false,
+};
+
+// directive @edfs__pusherSubscribe(channels: [String!]!, providerId: String! = "default") on FIELD_DEFINITION
+export const EDFS_PUSHER_SUBSCRIBE_DEFINITION: DirectiveDefinitionNode = {
+  arguments: [
+    {
+      kind: Kind.INPUT_VALUE_DEFINITION,
+      name: stringToNameNode(CHANNELS),
+      type: {
+        kind: Kind.NON_NULL_TYPE,
+        type: {
+          kind: Kind.LIST_TYPE,
+          type: REQUIRED_STRING_TYPE_NODE,
+        },
+      },
+    },
+    {
+      kind: Kind.INPUT_VALUE_DEFINITION,
+      name: stringToNameNode(PROVIDER_ID),
+      type: REQUIRED_STRING_TYPE_NODE,
+      defaultValue: {
+        kind: Kind.STRING,
+        value: DEFAULT_EDFS_PROVIDER_ID,
+      },
+    },
+  ],
+  kind: Kind.DIRECTIVE_DEFINITION,
+  locations: [stringToNameNode(FIELD_DEFINITION_UPPER)],
+  name: stringToNameNode(EDFS_PUSHER_SUBSCRIBE),
   repeatable: false,
 };
 

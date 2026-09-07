@@ -8,25 +8,150 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	graphqlmetricsv1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/graphqlmetrics/v1"
+	"github.com/wundergraph/cosmo/router/pkg/config"
+	"github.com/wundergraph/cosmo/router/pkg/graphqlschemausage"
+	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
+	"github.com/wundergraph/cosmo/router/pkg/slowplancache"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/astparser"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/plan"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/postprocess"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/resolve"
 
-	graphqlmetricsv1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/graphqlmetrics/v1"
-	"github.com/wundergraph/cosmo/router/pkg/graphqlschemausage"
-	"github.com/wundergraph/cosmo/router/pkg/slowplancache"
 )
 
 type planWithMetaData struct {
-	preparedPlan                      plan.Plan
-	operationDocument, schemaDocument *ast.Document
-	typeFieldUsageInfo                []*graphqlschemausage.TypeFieldUsageInfo
+	preparedPlan       plan.Plan
+	operationDocument  *ast.Document
+	typeFieldUsageInfo []*graphqlschemausage.TypeFieldUsageInfo
 	argumentUsageInfo                 []*graphqlmetricsv1.ArgumentUsageInfo
 	content                           string
 	operationName                     string
 	planningDuration                  time.Duration
+}
+
+// planCacheCostNodeBytes and planCacheCostUsageBytes approximate the average retained heap
+// of a single AST structural element and a single usage-info entry. Ristretto cost is
+// relative to MaxCost, so the constants only need to preserve ordering across cache entries;
+// they are deliberately coarse and cheap to compute.
+const (
+	planCacheCostNodeBytes  = 48
+	planCacheCostUsageBytes = 64
+)
+
+// planCacheCostFetchBytes and planCacheCostFieldBytes approximate the retained heap of a single
+// prepared-plan fetch (SingleFetch/EntityFetch/BatchEntityFetch, each carrying FetchInfo,
+// FetchConfiguration and an InputTemplate — empirically ~40 KiB) and a single response field
+// node (Field + FieldInfo with its []string slices — empirically ~500-800 bytes). Benchmark
+// data: 200 unique plans retaining 103 MiB of plan-cache heap (~515 KiB/plan) with ~8 fetches
+// and ~100-200 response fields per plan. The AST-only estimate above undercounts this by ~65x
+// because the plan tree — not the operation document — holds the bulk of the memory.
+const (
+	planCacheCostFetchBytes = 32 * 1024
+	planCacheCostFieldBytes = 768
+)
+
+// estimatePlanCacheCost approximates the retained heap of a cached plan entry so the
+// size-aware Ristretto config (mondaytweaks.SizeAwarePlanCache) evicts by memory footprint
+// instead of by entry count. It keys off operationDocument, which is always populated (the
+// content string is only set when the slow-plan cache is enabled), summing the raw operation
+// bytes and the lengths of the operation-side AST slices — both of which scale with operation
+// complexity and therefore with the size of the prepared plan tree the entry retains. The
+// estimate is intentionally an O(number-of-slices) field read, not a deep walk.
+func estimatePlanCacheCost(p *planWithMetaData) int64 {
+	if p == nil {
+		return 1
+	}
+	cost := int64(len(p.content) + len(p.operationName))
+	if d := p.operationDocument; d != nil {
+		cost += int64(len(d.Input.RawBytes) + len(d.Input.Variables))
+		nodes := len(d.RootNodes) + len(d.Arguments) + len(d.Values) +
+			len(d.Selections) + len(d.SelectionSets) + len(d.Fields) +
+			len(d.ObjectFields) + len(d.ObjectValues) + len(d.ListValues) +
+			len(d.VariableValues) + len(d.StringValues) + len(d.IntValues) +
+			len(d.FloatValues) + len(d.EnumValues) + len(d.InlineFragments) +
+			len(d.FragmentSpreads) + len(d.VariableDefinitions) + len(d.Directives)
+		cost += int64(nodes) * planCacheCostNodeBytes
+	}
+	cost += int64(len(p.typeFieldUsageInfo)+len(p.argumentUsageInfo)) * planCacheCostUsageBytes
+
+	// The prepared plan tree retains the bulk of the entry's heap: one fetch struct per
+	// subgraph fetch and one Field/FieldInfo per response field. Walk it once per cache miss
+	// (O(fetches + fields)) so the estimate tracks actual footprint, not just operation size.
+	if mondaytweaks.PlanCacheCostCountsPlanTree.Load() {
+		if syncPlan, ok := p.preparedPlan.(*plan.SynchronousResponsePlan); ok && syncPlan.Response != nil {
+			fetches := countFetchTreeNodes(syncPlan.Response.Fetches)
+			fields := countResponseFields(syncPlan.Response.Data)
+			cost += int64(fetches)*planCacheCostFetchBytes + int64(fields)*planCacheCostFieldBytes
+		}
+	}
+
+	if cost < 1 {
+		return 1
+	}
+	return cost
+}
+
+// countFetchTreeNodes returns the number of fetch nodes (Item != nil) in the fetch tree,
+// including a subscription Trigger. Each corresponds to a subgraph fetch whose FetchInfo,
+// FetchConfiguration and InputTemplate dominate the prepared plan's retained heap.
+func countFetchTreeNodes(n *resolve.FetchTreeNode) int {
+	if n == nil {
+		return 0
+	}
+	count := 0
+	if n.Item != nil {
+		count++
+	}
+	count += countFetchTreeNodes(n.Trigger)
+	for _, child := range n.ChildNodes {
+		count += countFetchTreeNodes(child)
+	}
+	return count
+}
+
+// countResponseFields returns the number of Field nodes in the response Data tree, recursing
+// through Object and Array nodes. Each Field carries a *FieldInfo whose []string slices make it
+// the second-largest contributor to a cached plan's heap after the fetches.
+func countResponseFields(node resolve.Node) int {
+	switch v := node.(type) {
+	case *resolve.Object:
+		if v == nil {
+			return 0
+		}
+		count := len(v.Fields)
+		for _, f := range v.Fields {
+			count += countResponseFields(f.Value)
+		}
+		return count
+	case *resolve.Array:
+		if v == nil {
+			return 0
+		}
+		return countResponseFields(v.Item)
+	default:
+		return 0
+	}
+}
+
+// sizeAwarePlanCacheEnabled reports whether the execution-plan cache should evict by estimated
+// retained heap (mondaytweaks.SizeAwarePlanCache) for this engine configuration. The per-config
+// DisableSizeAwarePlanCache override forces count-based eviction (tests, or a targeted
+// per-router rollback) without mutating the global flag, which matters under -race.
+func sizeAwarePlanCacheEnabled(cfg config.EngineExecutionConfiguration) bool {
+	return mondaytweaks.SizeAwarePlanCache.Load() && !cfg.DisableSizeAwarePlanCache
+}
+
+// planCacheCost returns the Ristretto cost for a plan-cache entry: the size-aware estimate
+// when size-aware eviction is enabled for this planner, or the historical unit cost of 1. The
+// MaxCost configured in buildOperationCaches must use the same decision so cost and budget
+// agree.
+func (op *OperationPlanner) planCacheCost(p *planWithMetaData) int64 {
+	if op.sizeAwarePlanCache {
+		return estimatePlanCacheCost(p)
+	}
+	return 1
 }
 
 type OperationPlanner struct {
@@ -39,6 +164,12 @@ type OperationPlanner struct {
 	// planningDurationOverride, when set, replaces the measured planning duration.
 	// This is used in tests to simulate slow queries.
 	planningDurationOverride func(content string) time.Duration
+
+	// sizeAwarePlanCache mirrors the plan cache's eviction mode: when true, plan-cache Set
+	// costs are the estimated retained heap (matching the byte budget MaxCost); when false,
+	// the historical unit cost of 1 (count-based). Kept per-planner so it agrees with the
+	// cache built for the same engine configuration.
+	sizeAwarePlanCache bool
 }
 
 type operationPlannerOpts struct {
@@ -61,6 +192,7 @@ func NewOperationPlanner(
 	planCache ExecutionPlanCache[uint64, *planWithMetaData],
 	fallbackCache *slowplancache.Cache[*planWithMetaData],
 	planningDurationOverride func(content string) time.Duration,
+	sizeAwarePlanCache bool,
 ) *OperationPlanner {
 	return &OperationPlanner{
 		planCache:                planCache,
@@ -68,6 +200,7 @@ func NewOperationPlanner(
 		trackUsageInfo:           executor.TrackUsageInfo,
 		slowPlanCache:            fallbackCache,
 		planningDurationOverride: planningDurationOverride,
+		sizeAwarePlanCache:       sizeAwarePlanCache,
 	}
 }
 
@@ -108,7 +241,6 @@ func (p *OperationPlanner) planOperation(content string, name string, includeQue
 	return &planWithMetaData{
 		preparedPlan:      preparedPlan,
 		operationDocument: &doc,
-		schemaDocument:    p.executor.RouterSchema,
 	}, nil
 }
 
@@ -181,7 +313,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 			// found in the plan fallback cache — re-use and re-insert into main cache
 			opContext.preparedPlan = cachedPlan
 			opContext.planCacheHit = true
-			p.planCache.Set(operationID, cachedPlan, 1)
+			p.planCache.Set(operationID, cachedPlan, p.planCacheCost(cachedPlan))
 		}
 	}
 
@@ -204,7 +336,7 @@ func (p *OperationPlanner) plan(opContext *operationContext, options PlanOptions
 
 			// Set into the main cache after planningDuration is finalized,
 			// because the OnEvict callback reads planningDuration concurrently.
-			p.planCache.Set(operationID, prepared, 1)
+			p.planCache.Set(operationID, prepared, p.planCacheCost(prepared))
 			p.slowPlanCache.Set(operationID, prepared, prepared.planningDuration)
 
 			return prepared, nil

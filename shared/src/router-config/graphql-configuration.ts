@@ -15,6 +15,7 @@ import {
   KafkaEventConfigurationSchema,
   NatsEventConfigurationSchema,
   NatsStreamConfigurationSchema,
+  PusherEventConfigurationSchema,
   RedisEventConfigurationSchema,
   RequiredFieldSchema,
   ScopesSchema,
@@ -35,6 +36,7 @@ import type {
   KafkaEventConfiguration,
   NatsEventConfiguration,
   NatsStreamConfiguration,
+  PusherEventConfiguration,
   RedisEventConfiguration,
   RequiredField,
   Scopes,
@@ -49,6 +51,7 @@ import {
   NatsEventType as CompositionEventType,
   PROVIDER_TYPE_KAFKA,
   PROVIDER_TYPE_NATS,
+  PROVIDER_TYPE_PUSHER,
   PROVIDER_TYPE_REDIS,
   RequiredFieldConfiguration,
   SubscriptionCondition,
@@ -141,7 +144,7 @@ export function configurationDatasToDataSourceConfiguration(
     childNodes: [],
     keys: [],
     provides: [],
-    events: create(DataSourceCustomEventsSchema, { nats: [], kafka: [], redis: [] }),
+    events: create(DataSourceCustomEventsSchema, { nats: [], kafka: [], redis: [], pusher: [] }),
     requires: [],
     entityInterfaces: [],
     interfaceObjects: [],
@@ -176,6 +179,7 @@ export function configurationDatasToDataSourceConfiguration(
     const natsEventConfigurations: NatsEventConfiguration[] = [];
     const kafkaEventConfigurations: KafkaEventConfiguration[] = [];
     const redisEventConfigurations: RedisEventConfiguration[] = [];
+    const pusherEventConfigurations: PusherEventConfiguration[] = [];
     for (const event of data.events ?? []) {
       switch (event.providerType) {
         case PROVIDER_TYPE_KAFKA: {
@@ -229,6 +233,20 @@ export function configurationDatasToDataSourceConfiguration(
           );
           break;
         }
+        case PROVIDER_TYPE_PUSHER: {
+          pusherEventConfigurations.push(
+            create(PusherEventConfigurationSchema, {
+              engineEventConfiguration: create(EngineEventConfigurationSchema, {
+                fieldName: event.fieldName,
+                providerId: event.providerId,
+                type: eventType(event.type),
+                typeName,
+              }),
+              channels: event.channels,
+            }),
+          );
+          break;
+        }
         default: {
           throw new Error(`Fatal: Unknown event provider.`);
         }
@@ -237,6 +255,7 @@ export function configurationDatasToDataSourceConfiguration(
     output.events.nats.push(...natsEventConfigurations);
     output.events.kafka.push(...kafkaEventConfigurations);
     output.events.redis.push(...redisEventConfigurations);
+    output.events.pusher.push(...pusherEventConfigurations);
   }
   return output;
 }

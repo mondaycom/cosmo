@@ -483,7 +483,12 @@ type EngineExecutionConfiguration struct {
 	MaxConcurrentResolvers int  `envDefault:"1024" env:"ENGINE_MAX_CONCURRENT_RESOLVERS" yaml:"max_concurrent_resolvers,omitempty"`
 	EnableNetPoll          bool `envDefault:"true" env:"ENGINE_ENABLE_NET_POLL" yaml:"enable_net_poll"`
 
-	ExecutionPlanCacheSize                           int64         `envDefault:"1024" env:"ENGINE_EXECUTION_PLAN_CACHE_SIZE" yaml:"execution_plan_cache_size,omitempty"`
+	ExecutionPlanCacheSize int64 `envDefault:"1024" env:"ENGINE_EXECUTION_PLAN_CACHE_SIZE" yaml:"execution_plan_cache_size,omitempty"`
+	// DisableSizeAwarePlanCache forces the execution-plan cache back to count-based eviction
+	// even when mondaytweaks.SizeAwarePlanCache is enabled. It is set programmatically (tests,
+	// or a targeted per-router rollback) and has no env/yaml binding; production leaves it
+	// false and follows the mondaytweaks default. See mondaytweaks.SizeAwarePlanCache.
+	DisableSizeAwarePlanCache                        bool          `yaml:"-"`
 	SlowPlanCacheSize                                int64         `envDefault:"300" env:"ENGINE_SLOW_PLAN_CACHE_SIZE" yaml:"slow_plan_cache_size,omitempty"`
 	SlowPlanCacheThreshold                           time.Duration `envDefault:"100ms" env:"ENGINE_SLOW_PLAN_CACHE_THRESHOLD" yaml:"slow_plan_cache_threshold,omitempty"`
 	MinifySubgraphOperations                         bool          `envDefault:"true" env:"ENGINE_MINIFY_SUBGRAPH_OPERATIONS" yaml:"minify_subgraph_operations"`
@@ -867,10 +872,91 @@ func (r RedisEventSource) GetID() string {
 	return r.ID
 }
 
+// PusherEncryptionConfiguration configures the decryption of monday.com's
+// encrypted Pusher channels ("private-enc_" prefix), which use a monday-specific
+// scheme rather than Pusher's native end-to-end encryption.
+type PusherEncryptionConfiguration struct {
+	Enabled bool `yaml:"enabled"`
+	// EncryptionKey decrypts every payload regardless of its enc_date. It replaces
+	// keys_endpoint, and the two are mutually exclusive. Intended for local
+	// development, where the key endpoint requires a monolith session; in production
+	// the keys rotate daily, so a pinned key stops working after a rotation.
+	EncryptionKey string `yaml:"encryption_key,omitempty"`
+	// KeysEndpoint answers with {"pusher_enc_keys": {"YYYY-MM-DD": "<key>"}}.
+	KeysEndpoint string `yaml:"keys_endpoint,omitempty"`
+	// RefreshInterval is how often the key set is refetched. The keys rotate daily.
+	RefreshInterval time.Duration `yaml:"refresh_interval,omitempty"`
+}
+
+type PusherEventSource struct {
+	ID     string `yaml:"id,omitempty"`
+	AppKey string `yaml:"app_key,omitempty"`
+	// Cluster is the Pusher cluster, e.g. "mt1". Ignored when ws_url is set.
+	Cluster string `yaml:"cluster,omitempty"`
+	// WSURL overrides the derived wss://ws-<cluster>.pusher.com endpoint.
+	WSURL string `yaml:"ws_url,omitempty"`
+	// AuthEndpoint signs private and presence channel subscriptions.
+	AuthEndpoint string `yaml:"auth_endpoint,omitempty"`
+	// AppSecret makes the router sign private channel subscriptions itself, as
+	// HMAC-SHA256 of "<socket_id>:<channel_name>" under the secret, instead of calling
+	// auth_endpoint. The two are mutually exclusive.
+	//
+	// This skips the monolith entirely, so no session cookie is needed and reconnects
+	// keep working. It also skips the per-user permission check that /pusher/auth
+	// performs: the router can then subscribe to any channel of the app, regardless of
+	// who issued the GraphQL request.
+	AppSecret string `yaml:"app_secret,omitempty"`
+	// AuthHeaders are static headers sent with every authorization and encryption key
+	// request. Use them only for headers that are not specific to a user; a user
+	// session credential belongs in auth_headers_from_request.
+	AuthHeaders map[string]string `yaml:"auth_headers,omitempty"`
+	// AuthHeadersFromRequest lists header names forwarded from the incoming GraphQL
+	// request to the authorization and encryption key requests, e.g. ["Cookie"].
+	// The auth endpoint authorizes a channel for the user behind the credential, so a
+	// per-user credential must travel with the subscription rather than be configured
+	// up front. The router keeps one Pusher connection per distinct credential.
+	//
+	// The listed headers must also be propagated to this subgraph by the header
+	// propagation rules; the router only forwards headers those rules produced.
+	AuthHeadersFromRequest []string                      `yaml:"auth_headers_from_request,omitempty"`
+	Encryption             PusherEncryptionConfiguration `yaml:"encryption,omitempty"`
+	// EntityMappings rewrite a channel payload into an entity representation before it
+	// reaches the resolver, so the router resolves the requested fields from the owning
+	// subgraph instead of expecting them in the event itself. Without a mapping for a
+	// field, its payload is forwarded unchanged.
+	EntityMappings []PusherEntityMapping `yaml:"entity_mappings,omitempty"`
+}
+
+// PusherEntityMapping turns the payload of one subscription field into
+// {"__typename": "<type_name>", "<key_field>": "<value read from the payload>"}.
+//
+// monday's Pusher payloads are change notifications carrying the whole changed
+// record, whose field names do not match the federated schema. The resolver only
+// needs the entity key, so the payload is reduced to it.
+type PusherEntityMapping struct {
+	// FieldName is the subscription root field this mapping applies to, e.g.
+	// "boardUpdated".
+	FieldName string `yaml:"field_name,omitempty"`
+	// TypeName is the entity type name emitted as __typename, e.g. "Board".
+	TypeName string `yaml:"type_name,omitempty"`
+	// KeyField is the field of the representation the value is written to. Defaults to
+	// "id".
+	KeyField string `yaml:"key_field,omitempty"`
+	// IDFrom lists the payload keys holding the entity key, in order of preference,
+	// e.g. ["board_id"] or ["pulse_id", "item_id"]. Dots address nested objects.
+	// The first key present and non-null wins.
+	IDFrom []string `yaml:"id_from,omitempty"`
+}
+
+func (p PusherEventSource) GetID() string {
+	return p.ID
+}
+
 type EventProviders struct {
-	Nats  []NatsEventSource  `yaml:"nats,omitempty"`
-	Kafka []KafkaEventSource `yaml:"kafka,omitempty"`
-	Redis []RedisEventSource `yaml:"redis,omitempty"`
+	Nats   []NatsEventSource   `yaml:"nats,omitempty"`
+	Kafka  []KafkaEventSource  `yaml:"kafka,omitempty"`
+	Redis  []RedisEventSource  `yaml:"redis,omitempty"`
+	Pusher []PusherEventSource `yaml:"pusher,omitempty"`
 }
 
 type EventsConfiguration struct {

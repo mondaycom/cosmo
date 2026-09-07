@@ -120,7 +120,6 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 		zap.String("method", "subscribe"),
 		zap.Strings("channels", subConf.Channels),
 	)
-
 	// Guard the possibly-nil connection: in strict mode a failed Startup leaves p.conn nil
 	// (under skip_unavailable_providers the resilient client is retained instead), so return
 	// an error rather than panicking if Subscribe is somehow reached without a connection.
@@ -128,7 +127,14 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 		return datasource.NewError("redis connection not initialized", nil)
 	}
 
-	sub := p.conn.PSubscribe(ctx, subConf.Channels...)
+	// monday fork: SUBSCRIBE, not PSUBSCRIBE. AWS ElastiCache Serverless lists
+	// psubscribe/punsubscribe among the commands unavailable on serverless caches,
+	// so a pattern subscribe is rejected server-side — and go-redis swallows it in
+	// the Channel() retry loop, so the subscription just silently never delivers.
+	// Trade-off: glob channels in @edfs__redisSubscribe(channels: [...]) no longer
+	// match. Channels templated from field arguments are unaffected.
+	log.Debug("subscribing")
+	sub := p.conn.Subscribe(ctx, subConf.Channels...)
 	msgChan := sub.Channel()
 
 	cleanup := func() {
