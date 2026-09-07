@@ -343,12 +343,18 @@ export const buildRouterConfig = function (input: Input): RouterConfig {
     let kind: DataSourceKind;
     let customGraphql: DataSourceCustom_GraphQL | undefined;
     let customEvents: DataSourceCustomEvents | undefined;
-    if (events.kafka.length > 0 || events.nats.length > 0 || events.redis.length > 0) {
+    if (
+      events.kafka.length > 0 ||
+      events.nats.length > 0 ||
+      events.redis.length > 0 ||
+      events.pusher.length > 0
+    ) {
       kind = DataSourceKind.PUBSUB;
       customEvents = create(DataSourceCustomEventsSchema, {
         kafka: events.kafka,
         nats: events.nats,
         redis: events.redis,
+        pusher: events.pusher,
       });
       // PUBSUB data sources cannot have root nodes other than
       // Query/Mutation/Subscription. Filter rootNodes in place

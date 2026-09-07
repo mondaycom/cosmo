@@ -294,6 +294,7 @@ import {
   EDFS_NATS_SUBSCRIBE,
   EDFS_PUBLISH_RESULT,
   EDFS_REDIS_PUBLISH,
+  EDFS_PUSHER_SUBSCRIBE,
   EDFS_REDIS_SUBSCRIBE,
   ENTITIES_FIELD,
   EXTENDS,
@@ -331,6 +332,7 @@ import {
   PROVIDER_ID,
   PROVIDER_TYPE_KAFKA,
   PROVIDER_TYPE_NATS,
+  PROVIDER_TYPE_PUSHER,
   PROVIDER_TYPE_REDIS,
   PUBLISH,
   QUERY,
@@ -3410,6 +3412,54 @@ export class NormalizationFactory {
     };
   }
 
+  getPusherSubscribeConfiguration(
+    directive: ConstDirectiveNode,
+    argumentDataByArgumentName: Map<string, InputValueData>,
+    fieldName: string,
+    errorMessages: string[],
+  ): EventConfiguration | undefined {
+    const channels: string[] = [];
+    let providerId = DEFAULT_EDFS_PROVIDER_ID;
+    for (const argumentNode of directive.arguments || []) {
+      switch (argumentNode.name.value) {
+        case CHANNELS: {
+          //@TODO list coercion
+          if (argumentNode.value.kind !== Kind.LIST) {
+            errorMessages.push(invalidEventSubjectsErrorMessage(CHANNELS));
+            continue;
+          }
+          for (const value of argumentNode.value.values) {
+            if (value.kind !== Kind.STRING || value.value.length < 1) {
+              errorMessages.push(invalidEventSubjectsItemErrorMessage(CHANNELS));
+              break;
+            }
+            validateArgumentTemplateReferences(value.value, argumentDataByArgumentName, errorMessages);
+            channels.push(value.value);
+          }
+          break;
+        }
+        case PROVIDER_ID: {
+          if (argumentNode.value.kind !== Kind.STRING || argumentNode.value.value.length < 1) {
+            errorMessages.push(invalidEventProviderIdErrorMessage);
+            continue;
+          }
+          providerId = argumentNode.value.value;
+          break;
+        }
+      }
+    }
+    if (errorMessages.length > 0) {
+      return;
+    }
+    return {
+      fieldName,
+      providerId,
+      providerType: PROVIDER_TYPE_PUSHER,
+      channels,
+      type: SUBSCRIBE,
+    };
+  }
+
   validateSubscriptionFilterDirectiveLocation(node: FieldDefinitionNode) {
     if (!node.directives) {
       return;
@@ -3505,6 +3555,15 @@ export class NormalizationFactory {
           );
           break;
         }
+        case EDFS_PUSHER_SUBSCRIBE: {
+          eventConfiguration = this.getPusherSubscribeConfiguration(
+            directive,
+            argumentDataByArgumentName,
+            fieldName,
+            errorMessages,
+          );
+          break;
+        }
         default:
           continue;
       }
@@ -3534,7 +3593,7 @@ export class NormalizationFactory {
       case OperationTypeNode.QUERY:
         return new Set<string>([EDFS_NATS_REQUEST]);
       case OperationTypeNode.SUBSCRIPTION:
-        return new Set<string>([EDFS_KAFKA_SUBSCRIBE, EDFS_NATS_SUBSCRIBE, EDFS_REDIS_SUBSCRIBE]);
+        return new Set<string>([EDFS_KAFKA_SUBSCRIBE, EDFS_NATS_SUBSCRIBE, EDFS_REDIS_SUBSCRIBE, EDFS_PUSHER_SUBSCRIBE]);
     }
   }
 

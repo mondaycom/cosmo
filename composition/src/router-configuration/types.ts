@@ -13,6 +13,8 @@ export type KafkaEventType = 'subscribe' | 'publish';
 
 export type RedisEventType = 'subscribe' | 'publish';
 
+export type PusherEventType = 'subscribe';
+
 export type StreamConfiguration = {
   consumerInactiveThreshold: number;
   consumerName: string;
@@ -44,7 +46,19 @@ export type RedisEventConfiguration = {
   type: RedisEventType;
 };
 
-export type EventConfiguration = KafkaEventConfiguration | NatsEventConfiguration | RedisEventConfiguration;
+export type PusherEventConfiguration = {
+  fieldName: string;
+  providerId: string;
+  providerType: 'pusher';
+  channels: string[];
+  type: PusherEventType;
+};
+
+export type EventConfiguration =
+  | KafkaEventConfiguration
+  | NatsEventConfiguration
+  | RedisEventConfiguration
+  | PusherEventConfiguration;
 
 export type SubscriptionFilterValue = boolean | null | number | string;
 

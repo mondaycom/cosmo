@@ -25,6 +25,7 @@ import {
   EDFS_NATS_STREAM_CONFIGURATION,
   EDFS_NATS_SUBSCRIBE,
   EDFS_REDIS_PUBLISH,
+  EDFS_PUSHER_SUBSCRIBE,
   EDFS_REDIS_SUBSCRIBE,
   ENUM_UPPER,
   ENUM_VALUE_UPPER,
@@ -104,6 +105,7 @@ import {
   EDFS_NATS_REQUEST_DEFINITION,
   EDFS_NATS_SUBSCRIBE_DEFINITION,
   EDFS_REDIS_PUBLISH_DEFINITION,
+  EDFS_PUSHER_SUBSCRIBE_DEFINITION,
   EDFS_REDIS_SUBSCRIBE_DEFINITION,
   EXTENDS_DEFINITION,
   EXTERNAL_DEFINITION,
@@ -800,6 +802,44 @@ export const REDIS_SUBSCRIBE_DEFINITION_DATA = newDirectiveDefinitionData({
   locations: new Set<DirectiveLocation>([FIELD_DEFINITION_UPPER]),
   name: EDFS_REDIS_SUBSCRIBE,
   node: EDFS_REDIS_SUBSCRIBE_DEFINITION,
+  optionalArgumentNames: new Set<ArgumentName>([PROVIDER_ID]),
+  requiredArgumentNames: new Set<ArgumentName>([CHANNELS]),
+});
+
+export const PUSHER_SUBSCRIBE_DEFINITION_DATA = newDirectiveDefinitionData({
+  argumentDataByName: new Map<ArgumentName, DirectiveArgumentData>([
+    [
+      CHANNELS,
+      newDirectiveArgumentData({
+        directive: `@${EDFS_PUSHER_SUBSCRIBE}`,
+        name: CHANNELS,
+        namedTypeKind: Kind.SCALAR_TYPE_DEFINITION,
+        typeNode: {
+          kind: Kind.NON_NULL_TYPE,
+          type: {
+            kind: Kind.LIST_TYPE,
+            type: REQUIRED_STRING_TYPE_NODE,
+          },
+        },
+      }),
+    ],
+    [
+      PROVIDER_ID,
+      newDirectiveArgumentData({
+        directive: `@${EDFS_PUSHER_SUBSCRIBE}`,
+        name: PROVIDER_ID,
+        namedTypeKind: Kind.SCALAR_TYPE_DEFINITION,
+        typeNode: REQUIRED_STRING_TYPE_NODE,
+        defaultValue: {
+          kind: Kind.STRING,
+          value: DEFAULT_EDFS_PROVIDER_ID,
+        },
+      }),
+    ],
+  ]),
+  locations: new Set<DirectiveLocation>([FIELD_DEFINITION_UPPER]),
+  name: EDFS_PUSHER_SUBSCRIBE,
+  node: EDFS_PUSHER_SUBSCRIBE_DEFINITION,
   optionalArgumentNames: new Set<ArgumentName>([PROVIDER_ID]),
   requiredArgumentNames: new Set<ArgumentName>([CHANNELS]),
 });

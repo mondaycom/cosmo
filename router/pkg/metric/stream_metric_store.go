@@ -15,9 +15,10 @@ import (
 type ProviderType string
 
 const (
-	ProviderTypeKafka ProviderType = "kafka"
-	ProviderTypeNats  ProviderType = "nats"
-	ProviderTypeRedis ProviderType = "redis"
+	ProviderTypeKafka  ProviderType = "kafka"
+	ProviderTypeNats   ProviderType = "nats"
+	ProviderTypeRedis  ProviderType = "redis"
+	ProviderTypePusher ProviderType = "pusher"
 )
 
 // StreamsEvent carries the values for stream metrics attributes.
