@@ -69,6 +69,12 @@ var (
 	// SizeAwarePlanCache is enabled.
 	PlanCacheCostCountsPlanTree atomic.Bool
 
+	// ShutdownDrain makes the router drain keep-alive connections for DRAIN_PERIOD before
+	// shutting the HTTP server down on a real stop (never on a config reload): every response
+	// carries "Connection: close" so pooled clients retire their connections instead of racing
+	// the shutdown and getting EOF. Default false; see item 13056979353. Without DRAIN_PERIOD > 0
+	// it has no effect.
+	ShutdownDrain atomic.Bool
 )
 
 func init() {

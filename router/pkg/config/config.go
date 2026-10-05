@@ -1420,6 +1420,13 @@ type Config struct {
 	LogServiceName                string                      `yaml:"log_service_name" envDefault:"@wundergraph/router" env:"LOG_SERVICE_NAME"`
 	ShutdownDelay                 time.Duration               `yaml:"shutdown_delay" envDefault:"60s" env:"SHUTDOWN_DELAY"`
 	GracePeriod                   time.Duration               `yaml:"grace_period" envDefault:"30s" env:"GRACE_PERIOD"`
+	// DrainPeriod is how long the router answers every response with "Connection: close" after a
+	// stop signal (never on a config reload), before it shuts the HTTP server down. Clients then
+	// retire their pooled keep-alive connections instead of racing the shutdown, which closes idle
+	// connections immediately and surfaces as EOF on the client. Set it above the longest idle
+	// timeout of any pooled client in front of the router. The wait runs inside the shutdown
+	// delay, so SHUTDOWN_DELAY >= DRAIN_PERIOD + GRACE_PERIOD. 0 disables the drain.
+	DrainPeriod time.Duration `yaml:"drain_period" envDefault:"0s" env:"DRAIN_PERIOD"`
 	PollInterval                  time.Duration               `yaml:"poll_interval" envDefault:"10s" env:"POLL_INTERVAL"`
 	PollJitter                    time.Duration               `yaml:"poll_jitter" envDefault:"5s" env:"POLL_JITTER"`
 	HealthCheckPath               string                      `yaml:"health_check_path" envDefault:"/health" env:"HEALTH_CHECK_PATH"`
