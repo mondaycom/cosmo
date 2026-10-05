@@ -1,17 +1,17 @@
-import { useRouter } from 'next/router';
+import { useParams } from 'next/navigation';
 import { useMemo } from 'react';
 import { FiBell, FiUsers, FiKey, FiSliders } from 'react-icons/fi';
 import { PageHeader } from './head';
 import { LayoutProps } from './layout';
 import { SideNav, NavLink } from './sidenav';
 import { TitleLayout } from './title-layout';
+import { buildUrl } from '@/lib/build-url';
 
 export const SettingsLayout = ({ children }: LayoutProps) => {
-  const router = useRouter();
-  const organizationSlug = router.query.organizationSlug as string;
+  const { organizationSlug } = useParams<{ organizationSlug: string }>();
 
   const links: NavLink[] = useMemo(() => {
-    const basePath = `/${organizationSlug}`;
+    const basePath = buildUrl('/:organizationSlug', { organizationSlug });
 
     return [
       {

@@ -14,8 +14,6 @@ import (
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/graphqlerrors"
 
 	"go.uber.org/zap"
-
-	"github.com/wundergraph/cosmo/router/pkg/health"
 )
 
 var (
@@ -173,9 +171,8 @@ type Cleaner interface {
 // ModuleContext is a type which defines the lifetime of modules that are registered with the router.
 type ModuleContext struct {
 	stdContext.Context
-	Module       Module
-	Logger       *zap.Logger
-	HealthChecks health.Checker
+	Module Module
+	Logger *zap.Logger
 }
 
 // WriteResponseError writes the given error as a GraphQL error response to the http.ResponseWriter

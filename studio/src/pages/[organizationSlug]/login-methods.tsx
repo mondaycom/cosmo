@@ -1,4 +1,5 @@
 import { getDashboardLayout } from '@/components/layout/dashboard-layout';
+import { useParams } from 'next/navigation';
 import { EmptyState } from '@/components/empty-state';
 import { OrganizationLoginMethodSettings } from '@/components/org-login-methods/organization-login-method-settings';
 import { NamespaceLoginMethodSettings } from '@/components/org-login-methods/namespace-login-method-settings';
@@ -14,10 +15,11 @@ import {
 } from '@wundergraph/cosmo-connect/dist/platform/v1/platform-PlatformService_connectquery';
 import { ExclamationTriangleIcon, InfoCircledIcon } from '@radix-ui/react-icons';
 import { useRouter } from 'next/router';
+import { buildUrl } from '@/lib/build-url';
 
 const LoginMethodsPage: NextPageWithLayout = () => {
   const router = useRouter();
-  const organizationSlug = router.query.organizationSlug as string;
+  const { organizationSlug } = useParams<{ organizationSlug: string }>();
   const isAdmin = useIsAdmin();
   // Both shared queries are owned here and passed to the sections. The login
   // methods query is also the entitlement source of truth: a non-entitled org
@@ -53,7 +55,11 @@ const LoginMethodsPage: NextPageWithLayout = () => {
         icon={<InfoCircledIcon className="h-12 w-12" />}
         title="Login method restrictions are not available"
         description="Upgrade to the Enterprise plan to restrict which login methods can access your organization and its namespaces."
-        actions={<Button onClick={() => router.push(`/${organizationSlug}/billing`)}>Upgrade</Button>}
+        actions={
+          <Button onClick={() => router.push(buildUrl('/:organizationSlug/billing', { organizationSlug }))}>
+            Upgrade
+          </Button>
+        }
       />
     );
   }

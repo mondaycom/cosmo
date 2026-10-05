@@ -52,6 +52,9 @@ import { UpdateMemberGroupDialog } from '@/components/members/update-member-grou
 import { useIsAdmin } from '@/hooks/use-is-admin';
 import { formatDateTime } from '@/lib/format-date';
 import { MultiGroupSelect } from '@/components/multi-group-select';
+import { buildUrl } from '@/lib/build-url';
+
+const DEFAULT_PAGE_SIZE = 20;
 
 const emailInputSchema = z.object({
   email: z.string().email(),
@@ -274,7 +277,7 @@ const PendingInvitations = () => {
   const user = useUser();
   const isAdmin = useIsAdmin();
 
-  const { pageSize, offset, pageNumber, search } = usePaginationParams();
+  const { pageSize, offset, pageNumber, search } = usePaginationParams({ defaultPageSize: DEFAULT_PAGE_SIZE });
 
   const [debouncedSearch] = useDebounce(search, 500);
 
@@ -331,7 +334,7 @@ const PendingInvitations = () => {
           </TableBody>
         </Table>
       </TableWrapper>
-      <Pagination limit={pageSize} noOfPages={noOfPages} pageNumber={pageNumber} />
+      <Pagination limit={pageSize} noOfPages={noOfPages} pageNumber={pageNumber} defaultPageSize={DEFAULT_PAGE_SIZE} />
     </>
   );
 };
@@ -341,7 +344,7 @@ const AcceptedMembers = () => {
   const isAdmin = useIsAdmin();
   const [selectedMember, setSelectedMember] = useState<OrgMember | undefined>();
 
-  const { pageSize, offset, pageNumber, search } = usePaginationParams();
+  const { pageSize, offset, pageNumber, search } = usePaginationParams({ defaultPageSize: DEFAULT_PAGE_SIZE });
 
   const [debouncedSearch] = useDebounce(search, 500);
 
@@ -413,7 +416,7 @@ const AcceptedMembers = () => {
           )}
         </Table>
       </TableWrapper>
-      <Pagination limit={pageSize} noOfPages={noOfPages} pageNumber={pageNumber} />
+      <Pagination limit={pageSize} noOfPages={noOfPages} pageNumber={pageNumber} defaultPageSize={DEFAULT_PAGE_SIZE} />
     </>
   );
 };
@@ -425,7 +428,7 @@ const MembersToolbar = () => {
   const isAdmin = useIsAdmin();
   const client = useQueryClient();
 
-  const { pageSize, offset, search } = usePaginationParams();
+  const { pageSize, offset, search } = usePaginationParams({ defaultPageSize: DEFAULT_PAGE_SIZE });
 
   const { data } = useQuery(isMemberLimitReached);
 
@@ -474,7 +477,7 @@ const MembersToolbar = () => {
           )}
           {limitReached && (
             <Button variant="outline" asChild>
-              <Link href={`/${organizationSlug}/billing`}>View plans</Link>
+              <Link href={buildUrl('/:organizationSlug/billing', { organizationSlug })}>View plans</Link>
             </Button>
           )}
         </DialogContent>
@@ -491,7 +494,7 @@ const MembersPage: NextPageWithLayout = () => {
   const [search, setSearch] = useState('');
   const [debouncedSearch] = useDebounce(search, 500);
 
-  const { pageSize, offset } = usePaginationParams();
+  const { pageSize, offset } = usePaginationParams({ defaultPageSize: DEFAULT_PAGE_SIZE });
 
   const { data } = useQuery(getPendingOrganizationMembers, {
     pagination: {

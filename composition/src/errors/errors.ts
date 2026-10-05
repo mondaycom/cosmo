@@ -22,6 +22,7 @@ import {
   type OneOfRequiredFieldsErrorParams,
   type SemanticNonNullLevelsIndexOutOfBoundsErrorParams,
   type SemanticNonNullLevelsNonNullErrorParams,
+  type DirectlyProvidedInterfaceFieldErrorParams,
 } from './types/params';
 import { type UnresolvableFieldData } from '../resolvability-graph/utils/utils';
 import {
@@ -29,6 +30,7 @@ import {
   ARGUMENT,
   FIELD,
   FIELD_PATH,
+  FROM_CONTEXT,
   IN_UPPER,
   INPUT_FIELD,
   INTERFACE,
@@ -584,6 +586,25 @@ export function invalidInterfaceImplementationError(
           invalidFieldImplementation.originalResponseType +
           `" for "${interfaceName}.${fieldName}".\n`;
       }
+      if (invalidFieldImplementation.interfaceContextCoords.size > 0) {
+        message +=
+          `   "@${FROM_CONTEXT}" cannot be defined on an Interface field.\n` +
+          `    The following argument` +
+          (invalidFieldImplementation.interfaceContextCoords.size > 1 ? `s define` : ` defines`) +
+          ` "@${FROM_CONTEXT}": "` +
+          [...invalidFieldImplementation.interfaceContextCoords].join(QUOTATION_JOIN) +
+          `"\n`;
+      }
+      if (invalidFieldImplementation.implementationContextCoords.size > 0) {
+        message +=
+          `   "@${FROM_CONTEXT}" cannot be defined on the implementation of the Interface field` +
+          ` "${interfaceName}.${fieldName}".\n` +
+          `    The following argument` +
+          (invalidFieldImplementation.implementationContextCoords.size > 1 ? `s define` : ` defines`) +
+          ` "@${FROM_CONTEXT}": "` +
+          [...invalidFieldImplementation.implementationContextCoords].join(QUOTATION_JOIN) +
+          `"\n`;
+      }
       if (invalidFieldImplementation.isInaccessible) {
         message +=
           `   The field has been declared "@inaccessible"; however, the same field has not been declared "@inaccessible"` +
@@ -622,6 +643,27 @@ export function invalidRequiredInputValueError(
       ` as optional on all other definitions of that ${typeString} in all other subgraphs.\n`;
   }
   return new Error(message);
+}
+
+export function requiredContextArgumentError(
+  coords: string,
+  fromContextSubgraphNames: Array<string>,
+  requiredSubgraphNames: Array<string>,
+): Error {
+  return new Error(
+    `The ${ARGUMENT} "${coords}" is invalid because:\n` +
+      ` It defines "@${FROM_CONTEXT}" in the following subgraph` +
+      (fromContextSubgraphNames.length > 1 ? 's' : '') +
+      ': "' +
+      fromContextSubgraphNames.join(QUOTATION_JOIN) +
+      `"\n` +
+      ` However, this argument is required in the following subgraph` +
+      (requiredSubgraphNames.length > 1 ? 's' : '') +
+      ': "' +
+      requiredSubgraphNames.join(QUOTATION_JOIN) +
+      `"\n` +
+      ` An ${ARGUMENT} that defines "@${FROM_CONTEXT}" must be optional in any subgraph that references it.\n`,
+  );
 }
 
 export function duplicateArgumentsError(fieldPath: string, duplicatedArguments: string[]): Error {
@@ -780,6 +822,24 @@ export function incompatibleTypeWithProvidesError({
   return new Error(
     ` A "@provides" directive is declared on field "${fieldCoords}" in subgraph "${subgraphName}".\n` +
       ` However, the response type "${responseType}" is not an Object, Interface, nor Union.`,
+  );
+}
+
+export function directlyProvidedInterfaceFieldError({
+  directiveCoords,
+  directiveName,
+  fieldSet,
+  selection,
+  subgraphName,
+  targetCoords,
+}: DirectlyProvidedInterfaceFieldErrorParams): Error {
+  return new Error(
+    `The field "${directiveCoords}" in subgraph "${subgraphName}" defines a "@${directiveName}"` +
+      ` directive with the following field set:\n "${fieldSet}".` +
+      `\n"${selection}" is a direct Interface selection, corresponding to field "${targetCoords}".` +
+      `\nHowever, no selection ancestors are declared "@external", and Interface fields themselves cannot be` +
+      ` declared "@external".\nConsequently, without a type fragment specifying the underlying type, it is` +
+      ` uncertain which fields are actually provided on this path.`,
   );
 }
 

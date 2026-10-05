@@ -1,4 +1,5 @@
 import { EmptyState } from '@/components/empty-state';
+import { useParams } from 'next/navigation';
 import { SubgraphPageLayout, getSubgraphLayout } from '@/components/layout/subgraph-layout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,6 +20,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { PiWarningCircle } from 'react-icons/pi';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 export const Empty = ({ labels }: { labels: string[] }) => {
   const {
@@ -92,7 +94,11 @@ export const FederatedGraphsTable = ({
         <TableBody>
           {graphs.map(
             ({ federatedGraph: { name, routingURL, lastUpdatedAt, labelMatchers, namespace }, isConnected }) => {
-              const path = `/${organizationSlug}/${namespace}/graph/${name}`;
+              const path = buildUrl('/:organizationSlug/:namespace/graph/:name', {
+                organizationSlug: organizationSlug as string,
+                namespace,
+                name,
+              });
               return (
                 <TableRow
                   key={name}
@@ -160,8 +166,7 @@ export const FederatedGraphsTable = ({
 };
 
 const FederatedGraphsPage: NextPageWithLayout = () => {
-  const router = useRouter();
-  const subgraphSlug = router.query.subgraphSlug as string;
+  const { subgraphSlug } = useParams<{ subgraphSlug: string }>();
   const {
     namespace: { name: namespace },
   } = useWorkspace();

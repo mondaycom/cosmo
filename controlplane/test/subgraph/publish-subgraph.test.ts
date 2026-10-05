@@ -81,6 +81,43 @@ describe('Publish subgraph tests', () => {
     expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.OK);
   });
 
+  test('that newlines do not cause extra compositions', async () => {
+    const { client, server } = await SetupTest({ dbname });
+    onTestFinished(() => server.close());
+
+    const subgraphName = genID('subgraph');
+
+    await createSubgraph(client, subgraphName, 'http://localhost:4001');
+    let publishFederatedSubgraphResp = await client.publishFederatedSubgraph({
+      name: subgraphName,
+      namespace: 'default',
+      schema: subgraphSDL,
+    });
+
+    expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.OK);
+    expect(publishFederatedSubgraphResp.hasChanged).toBe(true);
+
+    // Multiple newlines should not cause extra composition
+    publishFederatedSubgraphResp = await client.publishFederatedSubgraph({
+      name: subgraphName,
+      namespace: 'default',
+      schema: subgraphSDL + '\r\n\r\n\r\n\n\n\n',
+    });
+
+    expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.OK);
+    expect(publishFederatedSubgraphResp.hasChanged).toBe(false);
+
+    // Trimmed should not cause extra composition
+    publishFederatedSubgraphResp = await client.publishFederatedSubgraph({
+      name: subgraphName,
+      namespace: 'default',
+      schema: subgraphSDL.trimEnd(),
+    });
+
+    expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.OK);
+    expect(publishFederatedSubgraphResp.hasChanged).toBe(false);
+  });
+
   test.each(['organization-admin', 'organization-developer', 'subgraph-admin', 'subgraph-publisher'])(
     '%s should be able to publish to existing regular subgraph',
     async (role) => {
@@ -357,7 +394,7 @@ describe('Publish subgraph tests', () => {
 
     expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.ERR);
     expect(publishFederatedSubgraphResp.response?.details).toBe(
-      'An Event-Driven Graph must not define a websocket subprotocol.',
+      'An Event-Driven Graph must not define a websocket subprotocol',
     );
   });
 
@@ -374,9 +411,7 @@ describe('Publish subgraph tests', () => {
     });
 
     expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.ERR);
-    expect(publishFederatedSubgraphResp.response?.details).toBe(
-      'A valid, non-empty routing URL is required to create and publish a non-Event-Driven subgraph.',
-    );
+    expect(publishFederatedSubgraphResp.response?.details).toBe('A non-Event-Driven Graph must define a routing URL');
   });
 
   test('that an error is returned if a previously uncreated subgraph is published with an invalid routing url', async (testContext) => {
@@ -393,7 +428,7 @@ describe('Publish subgraph tests', () => {
     });
 
     expect(publishFederatedSubgraphResp.response?.code).toBe(EnumStatusCode.ERR);
-    expect(publishFederatedSubgraphResp.response?.details).toBe('Routing URL "url" is not a valid URL.');
+    expect(publishFederatedSubgraphResp.response?.details).toBe('Routing URL "url" is not a valid URL');
   });
 
   describe('Plugin subgraph publish tests', () => {
@@ -975,9 +1010,7 @@ describe('Publish subgraph tests', () => {
       });
 
       expect(publishResponse.response?.code).toBe(EnumStatusCode.ERR);
-      expect(publishResponse.response?.details).toBe(
-        'A valid, non-empty routing URL is required to create and publish a non-Event-Driven subgraph.',
-      );
+      expect(publishResponse.response?.details).toBe('A non-Event-Driven Graph must define a routing URL');
     });
 
     test('Should fail to create and publish GRPC service with invalid routing URL', async (testContext) => {
@@ -1000,7 +1033,7 @@ describe('Publish subgraph tests', () => {
       });
 
       expect(publishResponse.response?.code).toBe(EnumStatusCode.ERR);
-      expect(publishResponse.response?.details).toBe('Routing URL "invalid-url" is not a valid URL.');
+      expect(publishResponse.response?.details).toBe('Routing URL "invalid-url" is not a valid URL');
     });
 
     test.each(['organization-admin', 'organization-developer', 'subgraph-admin'])(

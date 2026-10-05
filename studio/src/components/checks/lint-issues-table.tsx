@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { useCheckParams } from '@/hooks/use-check-params';
 import { CheckCircleIcon, NoSymbolIcon } from '@heroicons/react/24/outline';
 import { Cross1Icon } from '@radix-ui/react-icons';
 import { LintIssue, LintSeverity } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
@@ -14,6 +15,7 @@ import { useContext } from 'react';
 import { GraphContext } from '@/components/layout/graph-layout';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 export const LintIssuesTable = ({
   lintIssues,
@@ -25,6 +27,7 @@ export const LintIssuesTable = ({
   isLintingEnabled: boolean;
 }) => {
   const router = useRouter();
+  const { slug, checkId } = useCheckParams();
   const user = useUser();
   const graphContext = useContext(GraphContext);
   const {
@@ -96,11 +99,14 @@ export const LintIssuesTable = ({
                     <TooltipTrigger asChild>
                       <Button asChild variant="ghost" size="sm" className="table-action">
                         <Link
-                          href={`/${organizationSlug}/${namespace}/graph/${router.query.slug}/checks/${
-                            router.query.checkId
-                          }?tab=schema&${l.subgraphName ? `subgraph=${l.subgraphName}` : ''}${
-                            l.issueLocation?.line ? `#L${l.issueLocation?.line}` : ''
-                          }`}
+                          href={`${buildUrl('/:organizationSlug/:namespace/graph/:slug/checks/:checkId', {
+                            organizationSlug,
+                            namespace,
+                            slug,
+                            checkId,
+                            tab: 'schema',
+                            subgraph: l.subgraphName,
+                          })}${l.issueLocation?.line ? `#L${l.issueLocation?.line}` : ''}`}
                         >
                           View
                         </Link>

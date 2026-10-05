@@ -1,16 +1,16 @@
 import { formatDateTime } from '@/lib/format-date';
+import { useParams } from 'next/navigation';
 import { MinusIcon, PlusIcon } from '@radix-ui/react-icons';
 import { FederatedGraphChangelogOutput } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
 import Link from 'next/link';
-import { useRouter } from 'next/router';
 import { PiCubeFocus } from 'react-icons/pi';
 import { Changes, getDiffCount } from './changes';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 export const Changelog = ({ entries }: { entries: FederatedGraphChangelogOutput[] }) => {
-  const router = useRouter();
-  const slug = router.query.slug as string;
+  const { slug } = useParams<{ slug: string }>();
   const {
     namespace: { name: namespace },
   } = useWorkspace();
@@ -26,7 +26,12 @@ export const Changelog = ({ entries }: { entries: FederatedGraphChangelogOutput[
               <div className="flex flex-col items-end gap-y-1">
                 <time className="mt-2 text-sm font-bold leading-none">{formatDateTime(new Date(createdAt))}</time>
                 <Link
-                  href={`/${organizationSlug}/${namespace}/graph/${slug}/compositions/${compositionId}`}
+                  href={buildUrl('/:organizationSlug/:namespace/graph/:slug/compositions/:compositionId', {
+                    organizationSlug,
+                    namespace,
+                    slug,
+                    compositionId,
+                  })}
                   className="flex items-center gap-x-1 text-sm text-primary hover:underline"
                 >
                   <PiCubeFocus className="h-4 w-4" />

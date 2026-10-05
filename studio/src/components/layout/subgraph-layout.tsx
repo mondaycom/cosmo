@@ -1,11 +1,11 @@
 import { cn } from '@/lib/utils';
+import { useParams } from 'next/navigation';
 import { useQuery } from '@connectrpc/connect-query';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
 import { ExclamationTriangleIcon, FileTextIcon, HomeIcon } from '@radix-ui/react-icons';
 import { EnumStatusCode } from '@wundergraph/cosmo-connect/dist/common/common_pb';
 import { getSubgraphByName } from '@wundergraph/cosmo-connect/dist/platform/v1/platform-PlatformService_connectquery';
 import { GetSubgraphByNameResponse } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
-import { useRouter } from 'next/router';
 import { Fragment, createContext, useMemo } from 'react';
 import { PiGraphLight } from 'react-icons/pi';
 import { EmptyState } from '../empty-state';
@@ -18,6 +18,7 @@ import { NavLink, SideNav } from './sidenav';
 import { WorkspaceSelector } from '@/components/dashboard/workspace-selector';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 export interface SubgraphContextProps {
   subgraph: GetSubgraphByNameResponse['graph'];
@@ -28,12 +29,11 @@ export interface SubgraphContextProps {
 export const SubgraphContext = createContext<SubgraphContextProps | undefined>(undefined);
 
 export const SubgraphLayout = ({ children }: LayoutProps) => {
-  const router = useRouter();
   const {
     namespace: { name: namespace },
   } = useWorkspace();
   const organizationSlug = useCurrentOrganization()?.slug;
-  const slug = router.query.subgraphSlug as string;
+  const { subgraphSlug: slug } = useParams<{ subgraphSlug: string }>();
 
   const { data, isLoading, error, refetch } = useQuery(getSubgraphByName, {
     name: slug,
@@ -52,7 +52,11 @@ export const SubgraphLayout = ({ children }: LayoutProps) => {
   }, [data]);
 
   const links: NavLink[] = useMemo(() => {
-    const basePath = `/${organizationSlug}/${namespace}/subgraph/${slug}`;
+    const basePath = buildUrl('/:organizationSlug/:namespace/subgraph/:slug', {
+      organizationSlug,
+      namespace,
+      slug,
+    });
 
     return [
       {

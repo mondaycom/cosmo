@@ -1,4 +1,6 @@
 import { getCheckBadge, getCheckIcon, isCheckSuccessful } from '@/components/check-badge-icon';
+import { useParams } from 'next/navigation';
+import { useQueryState } from 'nuqs';
 import { EmptyState } from '@/components/empty-state';
 import { GraphContext, GraphPageLayout, getGraphLayout } from '@/components/layout/graph-layout';
 import { SDLViewerActions } from '@/components/schema/sdl-viewer';
@@ -44,8 +46,10 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { usePaginationParams } from '@/hooks/use-pagination-params';
 import { useContext, useState } from 'react';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 export const ProposalDetails = ({
   proposal,
@@ -63,12 +67,10 @@ export const ProposalDetails = ({
   const {
     namespace: { name: namespace },
   } = useWorkspace();
-  const slug = router.query.slug as string;
-  const id = router.query.proposalId as string;
-  const tab = router.query.tab as string;
-  const subgraph = router.query.subgraph as string;
-  const pageNumber = router.query.page ? parseInt(router.query.page as string) : 1;
-  const limit = Number.parseInt((router.query.pageSize as string) || '10');
+  const { slug, proposalId: id } = useParams<{ slug: string; proposalId: string }>();
+  const [tab] = useQueryState('tab');
+  const [subgraph] = useQueryState('subgraph');
+  const { pageNumber, pageSize: limit, offset } = usePaginationParams();
   const { toast } = useToast();
 
   const [reviewAction, setReviewAction] = useState<'APPROVED' | 'CLOSED' | null>(null);
@@ -81,8 +83,8 @@ export const ProposalDetails = ({
     getProposalChecks,
     {
       proposalId: id,
-      limit: limit > 50 ? 50 : limit,
-      offset: (pageNumber - 1) * limit,
+      limit,
+      offset,
     },
     {
       enabled: tab === 'checks',
@@ -497,7 +499,12 @@ export const ProposalDetails = ({
                                 checkExtensionErrorMessage,
                               );
 
-                              const path = `/${user?.currentOrganization.slug}/${graphData?.graph?.namespace}/graph/${graphData?.graph?.name}/checks/${id}`;
+                              const path = buildUrl('/:organizationSlug/:namespace/graph/:name/checks/:id', {
+                                organizationSlug: user?.currentOrganization.slug,
+                                namespace: graphData?.graph?.namespace,
+                                name: graphData?.graph?.name,
+                                id,
+                              });
 
                               return (
                                 <TableRow
@@ -614,7 +621,11 @@ export const ProposalDetails = ({
                                               onClick={(e) => e.stopPropagation()}
                                             >
                                               <Link
-                                                href={`https://github.com/${ghDetails.ownerSlug}/${ghDetails.repositorySlug}/commit/${ghDetails.commitSha}`}
+                                                href={`https://github.com/${encodeURIComponent(
+                                                  ghDetails.ownerSlug,
+                                                )}/${encodeURIComponent(
+                                                  ghDetails.repositorySlug,
+                                                )}/commit/${encodeURIComponent(ghDetails.commitSha)}`}
                                                 className="inline-flex items-center gap-2 text-xs"
                                                 aria-label="View on GitHub"
                                                 target="_blank"
@@ -659,14 +670,13 @@ export const ProposalDetails = ({
 };
 
 const ProposalDetailsPage: NextPageWithLayout = () => {
-  const router = useRouter();
   const user = useUser();
   const graphData = useContext(GraphContext);
 
   const organizationSlug = user?.currentOrganization.slug;
   const namespace = graphData?.graph?.namespace;
   const slug = graphData?.graph?.name;
-  const id = router.query.proposalId as string;
+  const { proposalId: id } = useParams<{ proposalId: string }>();
 
   const { data, isLoading, error, refetch } = useQuery(getProposal, {
     proposalId: id,
@@ -694,7 +704,14 @@ const ProposalDetailsPage: NextPageWithLayout = () => {
       title={id}
       subtitle="A quick glance of the details for this proposal"
       breadcrumbs={[
-        <Link key={0} href={`/${organizationSlug}/${namespace}/graph/${slug}/proposals`}>
+        <Link
+          key={0}
+          href={buildUrl('/:organizationSlug/:namespace/graph/:slug/proposals', {
+            organizationSlug,
+            namespace,
+            slug,
+          })}
+        >
           Proposals
         </Link>,
       ]}

@@ -11,7 +11,6 @@ import (
 	nodev1 "github.com/wundergraph/cosmo/router/gen/proto/wg/cosmo/node/v1"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/grpcconnector"
-	"github.com/wundergraph/cosmo/router/pkg/mondaytweaks"
 	pubsub_datasource "github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/ast"
@@ -19,6 +18,7 @@ import (
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/asttransform"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/datasource/introspection_datasource"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/plan"
+	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/postprocess"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/resolve"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/operationreport"
 )
@@ -50,6 +50,9 @@ type Executor struct {
 	Resolver        *resolve.Resolver
 	RenameTypeNames []resolve.RenameTypeName
 	TrackUsageInfo  bool
+	// PostprocessorOptions configure the plan postprocessor from the engine
+	// execution configuration (multi-fetch merging, fetch scheduling).
+	PostprocessorOptions []postprocess.ProcessorOption
 }
 
 type ExecutorBuildOptions struct {
@@ -63,11 +66,10 @@ type ExecutorBuildOptions struct {
 	TraceClientRequired            bool
 	PluginsEnabled                 bool
 	InstanceData                   InstanceData
-	WebSocketConfiguration         *config.WebSocketConfiguration
 }
 
 func (b *ExecutorConfigurationBuilder) Build(ctx context.Context, opts *ExecutorBuildOptions) (*Executor, []pubsub_datasource.Provider, error) {
-	planConfig, providers, err := b.buildPlannerConfiguration(ctx, opts)
+	planConfig, providers, err := b.buildPlannerConfiguration(ctx, opts.EngineConfig, opts.Subgraphs, opts.RouterEngineConfig, opts.PluginsEnabled)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build planner configuration: %w", err)
 	}
@@ -150,7 +152,7 @@ func (b *ExecutorConfigurationBuilder) Build(ctx context.Context, opts *Executor
 
 	routerSchemaDefinition, report = astparser.ParseGraphqlDocumentString(opts.EngineConfig.GraphqlSchema)
 	if report.HasErrors() {
-		return nil, providers, fmt.Errorf("failed to parse graphql schema from engine config: %w", report)
+		return nil, providers, fmt.Errorf("failed to parse graphql schema from engine config: %w", &report)
 	}
 	// we need to merge the base schema, it contains the __schema and __type queries,
 	// as well as built-in scalars like Int, String, etc...
@@ -167,7 +169,7 @@ func (b *ExecutorConfigurationBuilder) Build(ctx context.Context, opts *Executor
 
 		clientSchema, report := astparser.ParseGraphqlDocumentString(clientSchemaStr)
 		if report.HasErrors() {
-			return nil, providers, fmt.Errorf("failed to parse graphql client schema from engine config: %w", report)
+			return nil, providers, fmt.Errorf("failed to parse graphql client schema from engine config: %w", &report)
 		}
 		err = asttransform.MergeDefinitionWithBaseSchema(&clientSchema)
 		if err != nil {
@@ -211,53 +213,48 @@ func (b *ExecutorConfigurationBuilder) Build(ctx context.Context, opts *Executor
 		}
 	}
 
+	var postprocessorOptions []postprocess.ProcessorOption
+	if opts.RouterEngineConfig.Execution.EnableMultiFetch {
+		postprocessorOptions = append(postprocessorOptions, postprocess.EnableMultiFetch())
+	}
+	if opts.RouterEngineConfig.Execution.EnableScheduleFetches {
+		postprocessorOptions = append(postprocessorOptions, postprocess.EnableScheduleFetches())
+	}
+
 	return &Executor{
-		PlanConfig:      *planConfig,
-		ClientSchema:    clientSchemaDefinition,
-		RouterSchema:    &routerSchemaDefinition,
-		Resolver:        resolver,
-		RenameTypeNames: renameTypeNames,
-		TrackUsageInfo:  b.trackUsageInfo,
+		PlanConfig:           *planConfig,
+		ClientSchema:         clientSchemaDefinition,
+		RouterSchema:         &routerSchemaDefinition,
+		Resolver:             resolver,
+		RenameTypeNames:      renameTypeNames,
+		TrackUsageInfo:       b.trackUsageInfo,
+		PostprocessorOptions: postprocessorOptions,
 	}, providers, nil
 }
 
-func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Context, opts *ExecutorBuildOptions) (*plan.Configuration, []pubsub_datasource.Provider, error) {
+func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Context, engineConfig *nodev1.EngineConfiguration, subgraphs []*nodev1.Subgraph, routerEngineCfg *RouterEngineConfiguration, pluginsEnabled bool) (*plan.Configuration, []pubsub_datasource.Provider, error) {
 	// this loader is used to take the engine config and create a plan config
 	// the plan config is what the engine uses to turn a GraphQL Request into an execution plan
 	// the plan config is stateful as it carries connection pools and other things
 
-	subscriptionClientOptions := b.subscriptionClientOptions
-	if subscriptionClientOptions == nil {
-		subscriptionClientOptions = &SubscriptionClientOptions{}
-	}
-	resolvedSubscriptionClientOptions := *subscriptionClientOptions
-	if mondaytweaks.UseNoopUpstreamSubscriptionClientWhenUnused.Load() {
-		resolvedSubscriptionClientOptions.UseNoopClient = shouldUseNoopUpstreamSubscriptionClient(
-			opts.EngineConfig.GetGraphqlSchema(),
-			opts.EngineConfig,
-			opts.RouterEngineConfig.Events,
-			opts.WebSocketConfiguration,
-		)
-	}
-
 	loader := NewLoader(ctx, b.trackUsageInfo, NewDefaultFactoryResolver(
 		ctx,
 		b.transportOptions,
-		&resolvedSubscriptionClientOptions,
+		b.subscriptionClientOptions,
 		b.baseTripper,
 		b.subgraphTrippers,
 		b.pluginHost,
 		b.logger,
-		opts.RouterEngineConfig.Execution.EnableNetPoll,
+		routerEngineCfg.Execution.EnableNetPoll,
 		b.instanceData,
 	), b.logger, b.subscriptionHooks)
 
 	// this generates the plan config using the data source factories from the config package
-	planConfig, providers, err := loader.Load(opts.EngineConfig, opts.Subgraphs, opts.RouterEngineConfig, opts.PluginsEnabled)
+	planConfig, providers, err := loader.Load(engineConfig, subgraphs, routerEngineCfg, pluginsEnabled)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
-	debug := &opts.RouterEngineConfig.Execution.Debug
+	debug := &routerEngineCfg.Execution.Debug
 	planConfig.Debug = plan.DebugConfiguration{
 		PrintOperationTransformations: debug.PrintOperationTransformations,
 		PrintOperationEnableASTRefs:   debug.PrintOperationEnableASTRefs,
@@ -268,19 +265,19 @@ func (b *ExecutorConfigurationBuilder) buildPlannerConfiguration(ctx context.Con
 		PlanningVisitor:               debug.PlanningVisitor,
 		DatasourceVisitor:             debug.DatasourceVisitor,
 	}
-	planConfig.MinifySubgraphOperations = opts.RouterEngineConfig.Execution.MinifySubgraphOperations
+	planConfig.MinifySubgraphOperations = routerEngineCfg.Execution.MinifySubgraphOperations
 
-	planConfig.EnableOperationNamePropagation = opts.RouterEngineConfig.Execution.EnableSubgraphFetchOperationName
+	planConfig.EnableOperationNamePropagation = routerEngineCfg.Execution.EnableSubgraphFetchOperationName
 
-	planConfig.BuildFetchReasons = opts.RouterEngineConfig.Execution.EnableRequireFetchReasons || opts.RouterEngineConfig.Execution.ValidateRequiredExternalFields
-	planConfig.ValidateRequiredExternalFields = opts.RouterEngineConfig.Execution.ValidateRequiredExternalFields
-	planConfig.RelaxSubgraphOperationFieldSelectionMergingNullability = opts.RouterEngineConfig.Execution.RelaxSubgraphOperationFieldSelectionMergingNullability
+	planConfig.BuildFetchReasons = routerEngineCfg.Execution.EnableRequireFetchReasons || routerEngineCfg.Execution.ValidateRequiredExternalFields
+	planConfig.ValidateRequiredExternalFields = routerEngineCfg.Execution.ValidateRequiredExternalFields
+	planConfig.RelaxSubgraphOperationFieldSelectionMergingNullability = routerEngineCfg.Execution.RelaxSubgraphOperationFieldSelectionMergingNullability
 
 	// Enable cost computation when cost control is enabled
-	if opts.RouterEngineConfig.CostControl != nil && opts.RouterEngineConfig.CostControl.Enabled {
+	if routerEngineCfg.CostControl != nil && routerEngineCfg.CostControl.Enabled {
 		planConfig.ComputeCosts = true
-		planConfig.StaticCostDefaultListSize = opts.RouterEngineConfig.CostControl.EstimatedListSize
-		planConfig.IgnoreImplementingTypeWeights = opts.RouterEngineConfig.CostControl.IgnoreImplementingTypeWeights
+		planConfig.StaticCostDefaultListSize = routerEngineCfg.CostControl.EstimatedListSize
+		planConfig.IgnoreImplementingTypeWeights = routerEngineCfg.CostControl.IgnoreImplementingTypeWeights
 	}
 
 	return planConfig, providers, nil

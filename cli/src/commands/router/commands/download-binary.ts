@@ -3,7 +3,7 @@ import { Octokit } from 'octokit';
 import { Command, program } from 'commander';
 import pc from 'picocolors';
 import cliProgress from 'cli-progress';
-import decompress from 'decompress';
+import decompress from '@xhmikosr/decompress';
 import { resolve, join } from 'pathe';
 import { BaseCommandOptions } from '../../../core/types/types.js';
 
@@ -60,7 +60,7 @@ export default function (_: BaseCommandOptions) {
       chunks.push(chunk);
     }
     bar.stop();
-    await decompress(Buffer.from(await new Blob(chunks).arrayBuffer()), path);
+    await decompress(Buffer.concat(chunks), path);
   });
   return command;
 }

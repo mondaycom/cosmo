@@ -1,4 +1,5 @@
 import { CacheDetailsSheet } from '@/components/cache/cache-details-sheet';
+import { useParams } from 'next/navigation';
 import { CacheOperationsTable } from '@/components/cache/operations-table';
 import { EmptyState } from '@/components/empty-state';
 import { GraphPageLayout, getGraphLayout } from '@/components/layout/graph-layout';
@@ -18,15 +19,17 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 import debounce from 'debounce';
 import { useRouter } from 'next/router';
+import { usePaginationParams } from '@/hooks/use-pagination-params';
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { docsBaseURL } from '@/lib/constants';
 import { useCheckUserAccess } from '@/hooks/use-check-user-access';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 const CacheOperationsPage: NextPageWithLayout = () => {
   const router = useRouter();
-  const federatedGraphName = router.query.slug as string;
+  const { slug: federatedGraphName } = useParams<{ slug: string }>();
   const {
     namespace: { name: namespace },
   } = useWorkspace();
@@ -34,10 +37,7 @@ const CacheOperationsPage: NextPageWithLayout = () => {
   const checkUserAccess = useCheckUserAccess();
   const plan = user?.currentOrganization?.billing?.plan;
 
-  const pageNumber = router.query.page ? parseInt(router.query.page as string) : 1;
-  const pageSize = Number.parseInt((router.query.pageSize as string) || '10');
-  const limit = pageSize > 50 ? 50 : pageSize;
-  const offset = (pageNumber - 1) * limit;
+  const { pageSize: limit, offset } = usePaginationParams();
 
   const { toast } = useToast();
 
@@ -103,7 +103,7 @@ const CacheOperationsPage: NextPageWithLayout = () => {
         actions={
           <Button
             onClick={() => {
-              router.push(`/${user?.currentOrganization.slug}/billing`);
+              router.push(buildUrl('/:organizationSlug/billing', { organizationSlug: user?.currentOrganization.slug }));
             }}
           >
             Upgrade
@@ -126,7 +126,12 @@ const CacheOperationsPage: NextPageWithLayout = () => {
         actions={
           <Button
             onClick={() => {
-              router.push(`/${user?.currentOrganization.slug}/cache-warmer?namespace=${namespace}`);
+              router.push(
+                buildUrl('/:organizationSlug/cache-warmer', {
+                  organizationSlug: user?.currentOrganization.slug,
+                  namespace,
+                }),
+              );
             }}
           >
             Configure Cache Warmer

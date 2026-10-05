@@ -1,4 +1,5 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrapper } from '@/components/ui/table';
 import useWindowSize from '@/hooks/use-window-size';
@@ -12,7 +13,6 @@ import { getFieldUsage } from '@wundergraph/cosmo-connect/dist/platform/v1/platf
 import { GetFieldUsageResponse } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
 import { differenceInHours, format, formatISO, fromUnixTime } from 'date-fns';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
 import { useRouter } from 'next/router';
 import { useContext, useId, useMemo } from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis } from 'recharts';
@@ -29,6 +29,7 @@ import { useAnalyticsQueryState } from './useAnalyticsQueryState';
 import { useFeatureLimit } from '@/hooks/use-feature-limit';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 export const FieldUsage = ({ usageData }: { usageData: GetFieldUsageResponse }) => {
   const router = useRouter();
@@ -38,7 +39,9 @@ export const FieldUsage = ({ usageData }: { usageData: GetFieldUsageResponse }) 
   const organizationSlug = useCurrentOrganization()?.slug;
   const slug = router.query.slug;
 
-  const subgraphs = useContext(GraphContext)?.subgraphs ?? [];
+  const graphContext = useContext(GraphContext);
+  const subgraphs = graphContext?.subgraphs ?? [];
+  const featureSubgraphs = graphContext?.featureSubgraphs ?? [];
 
   const { range, dateRange } = useAnalyticsQueryState();
 
@@ -242,19 +245,33 @@ export const FieldUsage = ({ usageData }: { usageData: GetFieldUsageResponse }) 
               <h2 className="text-lg font-semibold">Subgraphs: </h2>
               <div className="mt-[2px] grid w-max grid-cols-3 gap-x-8">
                 {usageData.meta.subgraphIds.map((id) => {
-                  const subgraph = subgraphs.find((s) => s.id === id);
+                  const subgraph = [...subgraphs, ...featureSubgraphs].find((s) => s.id === id);
                   if (!subgraph) return null;
+
+                  const content = (
+                    <div className="flex items-start gap-x-1">
+                      <CubeIcon className="mt-1.5 flex-shrink-0 break-all" />
+                      {subgraph.name}
+                    </div>
+                  );
+
+                  // Feature subgraphs are not part of the federated graph, so there is no page to link to
+                  if (subgraph.isFeatureSubgraph) {
+                    return <div key={id}>{content}</div>;
+                  }
 
                   return (
                     <Link
                       key={id}
-                      href={`/${organizationSlug}/${subgraph.namespace}/graph/${slug}/schema/sdl?subgraph=${subgraph.name}`}
+                      href={buildUrl('/:organizationSlug/:namespace/graph/:slug/schema/sdl', {
+                        organizationSlug,
+                        namespace: subgraph.namespace,
+                        slug: slug as string,
+                        subgraph: subgraph.name,
+                      })}
                       className="text-primary"
                     >
-                      <div className="flex items-start gap-x-1">
-                        <CubeIcon className="mt-1.5 flex-shrink-0 break-all" />
-                        {subgraph.name}
-                      </div>
+                      {content}
                     </Link>
                   );
                 })}
@@ -280,20 +297,18 @@ export const FieldUsage = ({ usageData }: { usageData: GetFieldUsageResponse }) 
 };
 
 export const FieldUsageSheet = () => {
-  const router = useRouter();
-
-  const searchParams = useSearchParams();
-
   const { range, dateRange } = useAnalyticsQueryState();
-  const isNamedType = searchParams.get('isNamedType') === 'true';
-  const showUsage = searchParams.get('showUsage');
+  const [{ showUsage, isNamedType }, setUsage] = useQueryStates({
+    showUsage: parseAsString,
+    isNamedType: parseAsBoolean.withDefault(false),
+  });
 
   const [type, field] = showUsage?.split('.') ?? [];
 
   const graph = useContext(GraphContext);
-  const featureFlagName = router.query.featureFlag as string;
+  const [featureFlagName] = useQueryState('featureFlag');
 
-  const category = router.query.category as string;
+  const [category] = useQueryState('category');
   const isInput = category === 'inputs';
 
   const { data, error, isLoading, refetch } = useQuery(
@@ -309,7 +324,7 @@ export const FieldUsageSheet = () => {
         start: formatISO(dateRange.start),
         end: formatISO(dateRange.end),
       },
-      featureFlagName,
+      featureFlagName: featureFlagName ?? undefined,
       isInput,
     },
     {
@@ -343,12 +358,7 @@ export const FieldUsageSheet = () => {
       open={!!showUsage}
       onOpenChange={(isOpen) => {
         if (!isOpen) {
-          const newQuery = { ...router.query };
-          delete newQuery['showUsage'];
-          delete newQuery['isNamedType'];
-          router.replace({
-            query: newQuery,
-          });
+          setUsage({ showUsage: null, isNamedType: null });
         }
       }}
     >

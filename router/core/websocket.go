@@ -72,7 +72,7 @@ type WebsocketMiddlewareOptions struct {
 	ApolloCompatibilityFlags config.ApolloCompatibilityFlags
 }
 
-func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) (func(http.Handler) http.Handler, *WebsocketHandler) {
+func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions) func(http.Handler) http.Handler {
 	handler := &WebsocketHandler{
 		ctx:                       ctx,
 		operationProcessor:        opts.OperationProcessor,
@@ -150,7 +150,7 @@ func NewWebsocketMiddleware(ctx context.Context, opts WebsocketMiddlewareOptions
 			}
 			handler.handleUpgradeRequest(w, r)
 		})
-	}, handler
+	}
 }
 
 // wsConnectionWrapper is a wrapper around websocket.Conn that allows
@@ -322,6 +322,11 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 		subProtocol = wsproto.AbsintheWSSubProtocol
 	}
 
+	// if no subprotocol was set, use the default subprotocol from the config
+	if subProtocol == "" {
+		subProtocol = h.config.DefaultSubprotocol
+	}
+
 	// After successful upgrade, we can't write to the response writer anymore
 	// because it's hijacked by the websocket connection
 
@@ -445,6 +450,7 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 	}
 
 	// Handle messages sync when net poller implementation is not available
+
 	go h.handleConnectionSync(handler)
 }
 
@@ -823,8 +829,6 @@ type WebSocketConnectionHandler struct {
 	apolloCompatibilityFlags config.ApolloCompatibilityFlags
 
 	clientInfoFromInitialPayload config.WebSocketClientInfoFromInitialPayloadConfiguration
-
-	closeOnce sync.Once
 }
 
 type forwardConfig struct {
@@ -927,8 +931,8 @@ func (h *WebSocketConnectionHandler) parseAndPlan(registration *SubscriptionRegi
 			return nil, nil, err
 		}
 
-		// Ensure if operation has both hash and query, that the hash matches the query
-		if operationKit.parsedOperation.GraphQLRequestExtensions.PersistedQuery.HasHash() && operationKit.parsedOperation.Request.Query != "" {
+		// APQ IDs must match the supplied query body.
+		if operationKit.persistedQueryHashMustMatchQuery() {
 			if operationKit.parsedOperation.Sha256Hash != operationKit.parsedOperation.GraphQLRequestExtensions.PersistedQuery.Sha256Hash {
 				return nil, nil, errors.New("persistedQuery sha256 hash does not match query body")
 			}
@@ -948,7 +952,7 @@ func (h *WebSocketConnectionHandler) parseAndPlan(registration *SubscriptionRegi
 			var poNotFoundErr *persistedoperation.PersistentOperationNotFoundError
 			if h.operationBlocker.logUnknownOperationsEnabled && errors.As(err, &poNotFoundErr) {
 				h.logger.Warn("Unknown persisted operation found", zap.String("query", operationKit.parsedOperation.Request.Query), zap.String("sha256Hash", poNotFoundErr.Sha256Hash))
-				if h.operationBlocker.safelistEnabled {
+				if h.operationBlocker.safelistEnabled || operationKit.parsedOperation.Request.Query == "" || operationKit.hasCustomPersistedOperationID() {
 					return nil, nil, err
 				}
 			} else {
@@ -959,7 +963,8 @@ func (h *WebSocketConnectionHandler) parseAndPlan(registration *SubscriptionRegi
 
 	// If the persistent operation is already in the cache, we skip the parse step
 	// because the operation was already parsed. This is a performance optimization, and we
-	// can do it because we know that the persisted operation is immutable (identified by the hash)
+	// can do it because manifest cache entries are scoped to the captured revision.
+	// Operations outside a manifest must remain immutable within their storage scope.
 	if !skipParse {
 		startParsing := time.Now()
 		if err := operationKit.Parse(); err != nil {
@@ -1000,6 +1005,11 @@ func (h *WebSocketConnectionHandler) parseAndPlan(registration *SubscriptionRegi
 		return nil, nil, err
 	}
 	opContext.variablesNormalizationCacheHit = cached
+
+	logInlineArguments(h.logger, operationKit.parsedOperation)
+	if h.operationProcessor.parseKitOptions.validateInlineArguments.ReturnInResponseExtensions {
+		opContext.inlineArguments = inlineArgumentQualifiedNames(operationKit.parsedOperation)
+	}
 
 	cached, err = operationKit.RemapVariables(h.disableVariablesRemapping)
 	if err != nil {
@@ -1131,6 +1141,7 @@ func (h *WebSocketConnectionHandler) executeSubscription(registration *Subscript
 	resolveCtx.RenameTypeNames = h.graphqlHandler.executor.RenameTypeNames
 	resolveCtx.TracingOptions = operationCtx.traceOptions
 	resolveCtx.Extensions = operationCtx.extensions
+	resolveCtx.InlineArguments = operationCtx.inlineArguments
 	resolveCtx.ExecutionOptions = operationCtx.executionOptions
 
 	if operationCtx.initialPayload != nil {
@@ -1154,7 +1165,7 @@ func (h *WebSocketConnectionHandler) executeSubscription(registration *Subscript
 			resolveCtx.SetPreFetchFieldAuthorizer(h.graphqlHandler.authorizer)
 		}
 	}
-	resolveCtx = h.graphqlHandler.configureRateLimiting(resolveCtx)
+	resolveCtx = h.graphqlHandler.configureRateLimiting(resolveCtx, operationCtx.opType)
 
 	// Put in a closure to evaluate err after defer
 	defer func() {
@@ -1379,7 +1390,7 @@ func (h *WebSocketConnectionHandler) ignoreHeader(k string) bool {
 func (h *WebSocketConnectionHandler) shouldComputeOperationSha256(operationKit *OperationKit) bool {
 	hasPersistedHash := operationKit.parsedOperation.GraphQLRequestExtensions.PersistedQuery.HasHash()
 
-	if hasPersistedHash && operationKit.parsedOperation.Request.Query != "" {
+	if operationKit.persistedQueryHashMustMatchQuery() {
 		return true
 	}
 
@@ -1391,21 +1402,19 @@ func (h *WebSocketConnectionHandler) shouldComputeOperationSha256(operationKit *
 }
 
 func (h *WebSocketConnectionHandler) Close(unsubscribe bool, closeKind wsproto.CloseKind) {
-	h.closeOnce.Do(func() {
-		if unsubscribe {
-			// Remove any pending IDs associated with this connection
-			err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
-			if err != nil {
-				h.logger.Debug("Unsubscribing client", zap.Error(err))
-			}
+	if unsubscribe {
+		// Remove any pending IDs associated with this connection
+		err := h.graphqlHandler.executor.Resolver.UnsubscribeClient(h.connectionID)
+		if err != nil {
+			h.logger.Debug("Unsubscribing client", zap.Error(err))
 		}
+	}
 
-		if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
-			h.logger.Debug("Writing close frame", zap.Error(err))
-		}
+	if err := h.conn.WriteCloseFrame(closeKind.Code, closeKind.Reason); err != nil {
+		h.logger.Debug("Writing close frame", zap.Error(err))
+	}
 
-		if err := h.conn.Close(); err != nil {
-			h.logger.Debug("Closing websocket connection", zap.Error(err))
-		}
-	})
+	if err := h.conn.Close(); err != nil {
+		h.logger.Debug("Closing websocket connection", zap.Error(err))
+	}
 }

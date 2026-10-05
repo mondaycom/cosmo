@@ -1,4 +1,5 @@
 import { Changelog } from '@/components/changelog/changelog';
+import { useParams } from 'next/navigation';
 import { EmptyState } from '@/components/empty-state';
 import { GraphPageLayout, getGraphLayout } from '@/components/layout/graph-layout';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 const SchemaVersionChangelogPage: NextPageWithLayout = () => {
   const router = useRouter();
@@ -19,8 +21,7 @@ const SchemaVersionChangelogPage: NextPageWithLayout = () => {
   const {
     namespace: { name: namespace },
   } = useWorkspace();
-  const slug = router.query.slug as string;
-  const id = router.query.schemaVersionId as string;
+  const { slug, schemaVersionId: id } = useParams<{ slug: string; schemaVersionId: string }>();
 
   const { data, isLoading, error, refetch } = useQuery(getChangelogBySchemaVersion, {
     schemaVersionId: id,
@@ -33,7 +34,14 @@ const SchemaVersionChangelogPage: NextPageWithLayout = () => {
       title={id}
       subtitle=""
       breadcrumbs={[
-        <Link key={0} href={`/${organizationSlug}/${namespace}/graph/${slug}/changelog`}>
+        <Link
+          key={0}
+          href={buildUrl('/:organizationSlug/:namespace/graph/:slug/changelog', {
+            organizationSlug,
+            namespace,
+            slug,
+          })}
+        >
           Changelog
         </Link>,
       ]}

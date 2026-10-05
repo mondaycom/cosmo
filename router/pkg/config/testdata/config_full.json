@@ -138,6 +138,38 @@
       "CardinalityLimit": 2000
     }
   },
+  "Pyroscope": {
+    "Enabled": true,
+    "ServerAddress": "https://profiles-prod-001.grafana.net",
+    "ApplicationName": "cosmo-router",
+    "BasicAuth": {
+      "Username": "123456",
+      "Password": "my-access-token"
+    },
+    "Headers": {
+      "X-Custom-Header": "value"
+    },
+    "Tags": {
+      "env": "prod"
+    },
+    "UploadRate": 15000000000,
+    "ProfileTypes": [
+      "cpu",
+      "alloc_objects",
+      "alloc_space",
+      "inuse_objects",
+      "inuse_space",
+      "goroutines",
+      "mutex_count",
+      "mutex_duration",
+      "block_count",
+      "block_duration",
+      "goroutine_leak"
+    ],
+    "DisableGCRuns": false,
+    "MutexProfileFraction": 5,
+    "BlockProfileRate": 5
+  },
   "GraphqlMetrics": {
     "Enabled": true,
     "CollectorEndpoint": "https://cosmo-metrics.wundergraph.com"
@@ -146,6 +178,9 @@
     "Enabled": true,
     "AllowOrigins": [
       "*"
+    ],
+    "MatchOrigins": [
+      "^https://([a-z0-9-]+\\.)*example\\.com$"
     ],
     "AllowMethods": [
       "HEAD",
@@ -228,7 +263,13 @@
     "Enabled": false,
     "Server": {
       "ListenAddr": "localhost:5025",
-      "BaseURL": "http://localhost:5025"
+      "BaseURL": "http://localhost:5025",
+      "Version": "1.0.0",
+      "Title": "Cosmo Graph",
+      "Description": "Federated graph exposed via MCP.",
+      "Discover": {
+        "Instructions": "Use the operation tools to interact with the graph."
+      }
     },
     "Storage": {
       "ProviderID": "mcp"
@@ -246,6 +287,7 @@
       "Enabled": false,
       "JWKS": null,
       "AuthorizationServerURL": "",
+      "AuthorizationServerURLs": null,
       "Scopes": {
         "Initialize": null,
         "ToolsList": null,
@@ -257,7 +299,10 @@
       "ScopeChallengeIncludeTokenScopes": false,
       "MaxScopeCombinations": 2048
     },
-    "ResourceDocumentation": ""
+    "ResourceDocumentation": "",
+    "OutputSchema": {
+      "Enabled": true
+    }
   },
   "ConnectRPC": {
     "Enabled": false,
@@ -691,7 +736,8 @@
           "Name": "authz",
           "ValuePrefixes": null
         }
-      ]
+      ],
+      "OnError": "continue"
     },
     "IgnoreIntrospection": false
   },
@@ -732,7 +778,8 @@
     "ErrorExtensionCode": {
       "Enabled": true,
       "Code": "RATE_LIMIT_EXCEEDED"
-    }
+    },
+    "ExcludeSubscriptions": true
   },
   "LocalhostFallbackInsideDocker": true,
   "CDN": {
@@ -797,9 +844,13 @@
         }
       ]
     },
+    "SkipUnavailableProviders": false,
     "Handlers": {
       "OnReceiveEvents": {
         "MaxConcurrentHandlers": 100,
+        "HandlerTimeout": 5000000000
+      },
+      "BeforeEventsDispatch": {
         "HandlerTimeout": 5000000000
       }
     }
@@ -817,6 +868,49 @@
     "ItemDelay": 0,
     "Timeout": 30000000000,
     "InMemoryFallback": true
+  },
+  "ResponseCache": {
+    "Enabled": true,
+    "KeyPrefix": "response_cache_test:",
+    "Storage": {
+      "Provider": "redis",
+      "ProviderID": "my_redis",
+      "MaxEntries": 2048
+    },
+    "Invalidation": {
+      "CacheTag": true,
+      "Subgraph": false,
+      "Type": true,
+      "Endpoint": {
+        "Enabled": true,
+        "ListenAddr": "localhost:5027",
+        "Path": "/invalidation",
+        "SharedKey": "a-shared-key-that-is-long-enough-to-pass"
+      }
+    },
+    "TagHeader": {
+      "Enabled": true,
+      "Name": "Surrogate-Key",
+      "Delimiter": " ",
+      "MaxBytes": 1024
+    },
+    "All": {
+      "Enabled": true,
+      "FallbackTTL": 30000000000,
+      "PrivateID": "request.auth.claims.sub"
+    },
+    "Subgraphs": {
+      "inventory": {
+        "Enabled": false,
+        "FallbackTTL": 0,
+        "PrivateID": ""
+      },
+      "products": {
+        "Enabled": true,
+        "FallbackTTL": 300000000000,
+        "PrivateID": "request.header.Get('X-User-Id')"
+      }
+    }
   },
   "RouterConfigPath": "latest.json",
   "RouterRegistration": true,
@@ -943,7 +1037,10 @@
     "DisableVariablesRemapping": false,
     "EnableRequireFetchReasons": false,
     "SubscriptionFetchTimeout": 30000000000,
+    "SSEServerWriteTimeout": 10000000000,
     "EnableDefer": false,
+    "EnableMultiFetch": true,
+    "EnableScheduleFetches": true,
     "WebSocketServerReadTimeout": 5000000000,
     "WebSocketServerWriteTimeout": 10000000000,
     "WebSocketServerPollTimeout": 1000000000,
@@ -954,7 +1051,16 @@
     "WebSocketClientPingTimeout": 30000000000,
     "WebSocketClientAckTimeout": 30000000000,
     "ValidateRequiredExternalFields": false,
-    "RelaxSubgraphOperationFieldSelectionMergingNullability": false
+    "RelaxSubgraphOperationFieldSelectionMergingNullability": false,
+    "AllowStringLiteralsForEnums": false,
+    "ValidateInlineArguments": {
+      "Mode": "off",
+      "EnforceHTTPStatusCode": 400,
+      "ErrorCode": "INLINE_ARGUMENT_VALUES_NOT_ALLOWED",
+      "ErrorMessage": "Inline argument values are not allowed. Use variables instead.",
+      "IncludePersistedOperations": false,
+      "ReturnInResponseExtensions": false
+    }
   },
   "WebSocket": {
     "Enabled": true,
@@ -962,6 +1068,7 @@
       "Enabled": true,
       "HandlerPath": "/absinthe/socket"
     },
+    "DefaultSubprotocol": "graphql-transport-ws",
     "ForwardUpgradeHeaders": {
       "Enabled": true,
       "AllowList": [

@@ -1,4 +1,5 @@
 import { useApplyParams } from '@/components/analytics/use-apply-params';
+import { useParams } from 'next/navigation';
 import { useDateRangeQueryState } from '@/components/analytics/useAnalyticsQueryState';
 import { getCheckIcon } from '@/components/check-badge-icon';
 import { DatePickerWithRange, DateRangePickerChangeHandler } from '@/components/date-picker-with-range';
@@ -26,19 +27,19 @@ import { getProposalsByFederatedGraph } from '@wundergraph/cosmo-connect/dist/pl
 import { formatDistanceToNow, formatISO } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { usePaginationParams } from '@/hooks/use-pagination-params';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 const ProposalsPage: NextPageWithLayout = () => {
   const router = useRouter();
   const user = useUser();
   const proposalsFeature = useFeature('proposals');
-  const federatedGraphName = router.query.slug as string;
+  const { slug: federatedGraphName } = useParams<{ slug: string }>();
   const {
     namespace: { name: namespace },
   } = useWorkspace();
-  const pageNumber = router.query.page ? parseInt(router.query.page as string) : 1;
-
-  const limit = Number.parseInt((router.query.pageSize as string) || '10');
+  const { pageNumber, pageSize: limit, offset } = usePaginationParams();
 
   const {
     dateRange: { start, end },
@@ -56,7 +57,7 @@ const ProposalsPage: NextPageWithLayout = () => {
       startDate: formatISO(startDate),
       endDate: formatISO(endDate),
       limit,
-      offset: (pageNumber - 1) * limit,
+      offset,
     },
     {
       placeholderData: (prev) => prev,
@@ -85,7 +86,12 @@ const ProposalsPage: NextPageWithLayout = () => {
         actions={
           <Button
             onClick={() => {
-              router.push(`/${user?.currentOrganization.slug}/policies?namespace=${router.query.namespace}#proposals`);
+              router.push(
+                `${buildUrl('/:organizationSlug/policies', {
+                  organizationSlug: user?.currentOrganization.slug,
+                  namespace,
+                })}#proposals`,
+              );
             }}
           >
             Configure Proposals
@@ -174,7 +180,15 @@ const ProposalsPage: NextPageWithLayout = () => {
                     <TableCell>
                       {latestCheckId ? (
                         <Link
-                          href={`/${user?.currentOrganization.slug}/${namespace}/graph/${federatedGraphName}/checks/${latestCheckId}`}
+                          href={buildUrl(
+                            '/:organizationSlug/:namespace/graph/:federatedGraphName/checks/:latestCheckId',
+                            {
+                              organizationSlug: user?.currentOrganization.slug,
+                              namespace,
+                              federatedGraphName,
+                              latestCheckId,
+                            },
+                          )}
                           onClick={(e) => e.stopPropagation()}
                           className="flex items-center gap-2"
                         >

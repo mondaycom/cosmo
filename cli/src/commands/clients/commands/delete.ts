@@ -3,7 +3,7 @@ import { EnumStatusCode } from '@wundergraph/cosmo-connect/dist/common/common_pb
 import type {
   DeleteClientResponse,
   PreviewDeleteClientResponse,
-} from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb.js';
+} from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
 import inquirer from 'inquirer';
 import pc from 'picocolors';
 import { config, getBaseHeaders } from '../../../core/config.js';
@@ -215,7 +215,9 @@ export default (opts: BaseCommandOptions) => {
 
     if ((previewResp.persistedOperationsCount > 0 || previewResp.hasTraffic) && !options.force) {
       const studioUrlObj = new URL(
-        `${previewResp.organizationSlug}/${options.namespace}/graph/${options.graphName}/operations`,
+        `${encodeURIComponent(previewResp.organizationSlug)}/${encodeURIComponent(options.namespace)}/graph/${encodeURIComponent(
+          options.graphName,
+        )}/operations`,
         config.webURL,
       );
       studioUrlObj.searchParams.set('clientNames', previewResp.client?.name ?? '');

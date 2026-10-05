@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/buger/jsonparser"
@@ -80,10 +79,6 @@ type DefaultFactoryResolver struct {
 	transportFactory              ApiTransportFactory
 	defaultSubgraphRequestTimeout time.Duration
 	subscriptionClientOptions     []graphql_datasource.SubscriptionClientOption
-	useNoopSubscriptionClient     bool
-
-	subscriptionClient     graphql_datasource.GraphQLSubscriptionClient
-	subscriptionClientOnce sync.Once
 }
 
 func NewDefaultFactoryResolver(
@@ -137,9 +132,7 @@ func NewDefaultFactoryResolver(
 		graphql_datasource.WithLogger(factoryLogger),
 	}
 
-	useNoopSubscriptionClient := false
 	if subscriptionClientOptions != nil {
-		useNoopSubscriptionClient = subscriptionClientOptions.UseNoopClient
 		if subscriptionClientOptions.PingInterval > 0 {
 			options = append(options, graphql_datasource.WithPingInterval(subscriptionClientOptions.PingInterval))
 		}
@@ -172,7 +165,6 @@ func NewDefaultFactoryResolver(
 		transportFactory:              transportFactory,
 		defaultSubgraphRequestTimeout: transportOptions.SubgraphTransportOptions.RequestTimeout,
 		subscriptionClientOptions:     options,
-		useNoopSubscriptionClient:     useNoopSubscriptionClient,
 	}
 }
 
@@ -192,40 +184,10 @@ func (d *DefaultFactoryResolver) ResolveGraphqlFactory(subgraphName string) (pla
 
 	if d.transportFactory == nil || d.baseTransport == nil {
 		// dummy implementation for plan generator that doesn't make requests
-		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, d.subscriptionClientForFactory())
-	}
-
-	defaultHTTPClient := &http.Client{
-		Timeout:   d.defaultSubgraphRequestTimeout,
-		Transport: d.transportFactory.RoundTripper(d.baseTransport),
-	}
-
-	if subgraphClient, ok := d.subgraphHTTPClients[subgraphName]; ok {
-		// it's intentional that we're not using the subgraphClient for subscriptions
-		// custom subgraph clients are intended to be used for custom timeouts, which is not relevant for subscriptions
-		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, d.subscriptionClientForFactory())
-	}
-
-	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, d.subscriptionClientForFactory())
-}
-
-func (d *DefaultFactoryResolver) subscriptionClientForFactory() graphql_datasource.GraphQLSubscriptionClient {
-	if mondaytweaks.ShareUpstreamSubscriptionClient.Load() {
-		return d.sharedSubscriptionClient()
-	}
-	return d.newSubscriptionClient()
-}
-
-func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.GraphQLSubscriptionClient {
-	if d.useNoopSubscriptionClient {
-		return noopGraphQLSubscriptionClientInstance
-	}
-
-	if d.transportFactory == nil || d.baseTransport == nil {
-		return graphql_datasource.NewGraphQLSubscriptionClient(
-			d.engineCtx,
+		subscriptionClient := graphql_datasource.NewGraphQLSubscriptionClient(d.engineCtx,
 			d.subscriptionClientOptions...,
 		)
+		return graphql_datasource.NewFactory(d.engineCtx, http.DefaultClient, subscriptionClient)
 	}
 
 	defaultHTTPClient := &http.Client{
@@ -237,49 +199,18 @@ func (d *DefaultFactoryResolver) newSubscriptionClient() graphql_datasource.Grap
 		Transport: d.transportFactory.RoundTripper(d.baseTransport),
 	}
 
-	return graphql_datasource.NewGraphQLSubscriptionClient(
+	subscriptionClient := graphql_datasource.NewGraphQLSubscriptionClient(
 		d.engineCtx,
-		append([]graphql_datasource.SubscriptionClientOption{
-			graphql_datasource.WithUpgradeClient(defaultHTTPClient),
-			graphql_datasource.WithStreamingClient(streamingClient),
-		}, d.subscriptionClientOptions...)...,
+		append([]graphql_datasource.SubscriptionClientOption{graphql_datasource.WithUpgradeClient(defaultHTTPClient), graphql_datasource.WithStreamingClient(streamingClient)}, d.subscriptionClientOptions...)...,
 	)
-}
 
-func (d *DefaultFactoryResolver) sharedSubscriptionClient() graphql_datasource.GraphQLSubscriptionClient {
-	d.subscriptionClientOnce.Do(func() {
-		if d.useNoopSubscriptionClient {
-			d.subscriptionClient = noopGraphQLSubscriptionClientInstance
-			return
-		}
+	if subgraphClient, ok := d.subgraphHTTPClients[subgraphName]; ok {
+		// it's intentional that we're not using the subgraphClient for subscriptions
+		// custom subgraph clients are intended to be used for custom timeouts, which is not relevant for subscriptions
+		return graphql_datasource.NewFactory(d.engineCtx, subgraphClient, subscriptionClient)
+	}
 
-		if d.transportFactory == nil || d.baseTransport == nil {
-			d.subscriptionClient = graphql_datasource.NewGraphQLSubscriptionClient(
-				d.engineCtx,
-				d.subscriptionClientOptions...,
-			)
-			return
-		}
-
-		defaultHTTPClient := &http.Client{
-			Timeout:   d.defaultSubgraphRequestTimeout,
-			Transport: d.transportFactory.RoundTripper(d.baseTransport),
-		}
-
-		streamingClient := &http.Client{
-			Transport: d.transportFactory.RoundTripper(d.baseTransport),
-		}
-
-		d.subscriptionClient = graphql_datasource.NewGraphQLSubscriptionClient(
-			d.engineCtx,
-			append([]graphql_datasource.SubscriptionClientOption{
-				graphql_datasource.WithUpgradeClient(defaultHTTPClient),
-				graphql_datasource.WithStreamingClient(streamingClient),
-			}, d.subscriptionClientOptions...)...,
-		)
-	})
-
-	return d.subscriptionClient
+	return graphql_datasource.NewFactory(d.engineCtx, defaultHTTPClient, subscriptionClient)
 }
 
 func (d *DefaultFactoryResolver) ResolveStaticFactory() (factory plan.PlannerFactory[staticdatasource.Configuration], err error) {
@@ -382,6 +313,9 @@ func (l *Loader) Load(engineConfig *nodev1.EngineConfiguration, subgraphs []*nod
 	outConfig.DisableIncludeFieldDependencies = mondaytweaks.DisableFieldDependencies.Load()
 	// attach field usage information to the plan
 	outConfig.DefaultFlushIntervalMillis = engineConfig.DefaultFlushInterval
+	// EnableMultiFetch makes the planner record the subgraph operation artifacts
+	// the postprocessor's multi-fetch merge stage consumes.
+	outConfig.EnableMultiFetch = routerEngineConfig.Execution.EnableMultiFetch
 	for _, configuration := range engineConfig.FieldConfigurations {
 		var args []plan.ArgumentConfiguration
 		for _, argumentConfiguration := range configuration.ArgumentsConfiguration {
@@ -599,6 +533,11 @@ func (l *Loader) Load(engineConfig *nodev1.EngineConfiguration, subgraphs []*nod
 		onReceiveEventsFns[i] = NewPubSubOnReceiveEventsHook(fn)
 	}
 
+	beforeEventsDispatchFns := make([]pubsub_datasource.BeforeEventsDispatchFn, len(l.subscriptionHooks.beforeEventsDispatch.handlers))
+	for i, fn := range l.subscriptionHooks.beforeEventsDispatch.handlers {
+		beforeEventsDispatchFns[i] = NewPubSubBeforeEventsDispatchHook(fn, l.logger)
+	}
+
 	subscriptionOnCreateFns := make([]pubsub_datasource.SubscriptionOnCreateFn, len(l.subscriptionHooks.onCreate.handlers))
 	for i, fn := range l.subscriptionHooks.onCreate.handlers {
 		subscriptionOnCreateFns[i] = NewPubSubSubscriptionOnCreateHook(fn)
@@ -623,6 +562,10 @@ func (l *Loader) Load(engineConfig *nodev1.EngineConfiguration, subgraphs []*nod
 				Handlers:              onReceiveEventsFns,
 				MaxConcurrentHandlers: l.subscriptionHooks.onReceiveEvents.maxConcurrentHandlers,
 				Timeout:               l.subscriptionHooks.onReceiveEvents.timeout,
+			},
+			BeforeEventsDispatch: pubsub_datasource.BeforeEventsDispatchHooks{
+				Handlers: beforeEventsDispatchFns,
+				Timeout:  l.subscriptionHooks.beforeEventsDispatch.timeout,
 			},
 			SubscriptionOnCreate: pubsub_datasource.SubscriptionOnCreateHooks{
 				Handlers: subscriptionOnCreateFns,

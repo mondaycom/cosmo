@@ -1,6 +1,7 @@
 package core
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -18,8 +19,11 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/health"
 	"github.com/wundergraph/cosmo/router/pkg/mcpserver"
 	rmetric "github.com/wundergraph/cosmo/router/pkg/metric"
+	"github.com/wundergraph/cosmo/router/pkg/profile/pyroscope"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
+	"github.com/wundergraph/cosmo/router/pkg/responsecaching"
 	rtrace "github.com/wundergraph/cosmo/router/pkg/trace"
+	"github.com/wundergraph/graphql-go-tools/v2/pkg/caching"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -29,10 +33,11 @@ import (
 )
 
 type subscriptionHooks struct {
-	onCreate        onCreateHooks
-	onStart         onStartHooks
-	onPublishEvents onPublishEventsHooks
-	onReceiveEvents onReceiveEventsHooks
+	onCreate             onCreateHooks
+	onStart              onStartHooks
+	onPublishEvents      onPublishEventsHooks
+	onReceiveEvents      onReceiveEventsHooks
+	beforeEventsDispatch beforeEventsDispatchHooks
 }
 
 type onCreateHooks struct {
@@ -53,16 +58,29 @@ type onReceiveEventsHooks struct {
 	timeout               time.Duration
 }
 
+type beforeEventsDispatchHooks struct {
+	handlers []func(ctx StreamBeforeEventsDispatchHandlerContext, events datasource.StreamEvents) (datasource.StreamEvents, error)
+	timeout  time.Duration
+}
+
+type ResponseCache interface {
+	caching.Cache
+	responsecaching.Invalidator
+	io.Closer
+}
+
 type Config struct {
 	clusterName                     string
 	instanceID                      string
 	logger                          *zap.Logger
 	traceConfig                     *rtrace.Config
 	metricConfig                    *rmetric.Config
+	pyroscopeConfig                 *config.Pyroscope
 	tracerProvider                  *sdktrace.TracerProvider
 	otlpMeterProvider               *sdkmetric.MeterProvider
 	promMeterProvider               *sdkmetric.MeterProvider
 	gqlMetricsExporter              *graphqlmetrics.GraphQLMetricsExporter
+	pyroscopeProfiler               *pyroscope.Profiler
 	corsOptions                     *cors.Config
 	setConfigVersionHeader          bool
 	routerGracePeriod               time.Duration
@@ -118,6 +136,9 @@ type Config struct {
 	accessController                *AccessController
 	retryOptions                    retrytransport.RetryOptions
 	redisClient                     rd.RDCloser
+	responseCacheConfig             *config.ResponseCacheConfiguration
+	responseCache                   ResponseCache
+	responseCacheInvalidationServer *http.Server
 	mcpServer                       *mcpserver.GraphQLSchemaServer
 	connectRPCServer                *connectrpc.Server
 	processStartTime                time.Time

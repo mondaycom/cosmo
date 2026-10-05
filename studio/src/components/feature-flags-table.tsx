@@ -6,6 +6,7 @@ import { FeatureFlag, FederatedGraph } from '@wundergraph/cosmo-connect/dist/pla
 import { formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { usePaginationParams } from '@/hooks/use-pagination-params';
 import { EmptyState } from './empty-state';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -14,6 +15,7 @@ import { Pagination } from './ui/pagination';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrapper } from './ui/table';
 import { Tooltip } from './ui/tooltip';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 export const Empty = ({ graph }: { graph?: FederatedGraph }) => {
   const {
@@ -76,8 +78,7 @@ export const FeatureFlagsTable = ({
   const router = useRouter();
   const organizationSlug = user?.currentOrganization.slug;
 
-  const pageNumber = router.query.page ? parseInt(router.query.page as string) : 1;
-  const limit = Number.parseInt((router.query.pageSize as string) || '10');
+  const { pageNumber, pageSize: limit } = usePaginationParams();
   const noOfPages = Math.ceil(totalCount / limit);
 
   if (!featureFlags || featureFlags.length === 0) return <Empty graph={graph} />;
@@ -100,8 +101,12 @@ export const FeatureFlagsTable = ({
           <TableBody>
             {featureFlags.map(({ name, labels, createdAt, updatedAt, createdBy, namespace, isEnabled }) => {
               const path = graph
-                ? `${router.asPath.split('?')[0]}/${name}`
-                : `/${organizationSlug}/feature-flags/${name}?namespace=${namespace}`;
+                ? buildUrl(`${router.asPath.split('?')[0]}/:name`, { name })
+                : buildUrl('/:organizationSlug/feature-flags/:name', {
+                    organizationSlug,
+                    namespace,
+                    name,
+                  });
 
               return (
                 <TableRow

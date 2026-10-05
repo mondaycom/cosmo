@@ -1,11 +1,13 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,6 +21,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/mitchellh/mapstructure"
 	"github.com/nats-io/nuid"
+	"github.com/wundergraph/cosmo/router/pkg/profile/pyroscope"
 	"github.com/wundergraph/cosmo/router/pkg/routerconfig"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -46,6 +49,7 @@ import (
 	"github.com/wundergraph/cosmo/router/internal/retrytransport"
 	"github.com/wundergraph/cosmo/router/internal/stringsx"
 	"github.com/wundergraph/cosmo/router/internal/track"
+	"github.com/wundergraph/cosmo/router/internal/versioninfo"
 	"github.com/wundergraph/cosmo/router/pkg/config"
 	"github.com/wundergraph/cosmo/router/pkg/connectrpc"
 	"github.com/wundergraph/cosmo/router/pkg/controlplane/configpoller"
@@ -56,6 +60,9 @@ import (
 	"github.com/wundergraph/cosmo/router/pkg/mcpserver"
 	rmetric "github.com/wundergraph/cosmo/router/pkg/metric"
 	"github.com/wundergraph/cosmo/router/pkg/otel/otelconfig"
+	inmemorycache "github.com/wundergraph/cosmo/router/pkg/responsecaching/cache/in_memory"
+	rediscache "github.com/wundergraph/cosmo/router/pkg/responsecaching/cache/redis"
+	"github.com/wundergraph/cosmo/router/pkg/responsecaching/invalidation"
 	"github.com/wundergraph/cosmo/router/pkg/statistics"
 	rtrace "github.com/wundergraph/cosmo/router/pkg/trace"
 	"github.com/wundergraph/cosmo/router/pkg/trace/attributeprocessor"
@@ -100,6 +107,9 @@ type (
 		usage                 UsageTracker
 		headerPropagation     *HeaderPropagation
 		reloadPersistentState *ReloadPersistentState
+		connectionMetricsLock sync.Mutex
+		connectionMetrics     *rmetric.ConnectionMetrics
+		traceDialer           *TraceDialer
 	}
 
 	UsageTracker interface {
@@ -277,8 +287,17 @@ func NewRouter(ctx context.Context, opts ...Option) (*Router, error) {
 		r.subscriptionHooks.onReceiveEvents.timeout = 5 * time.Second
 	}
 
+	if r.subscriptionHooks.beforeEventsDispatch.timeout == 0 {
+		r.subscriptionHooks.beforeEventsDispatch.timeout = 5 * time.Second
+	}
+
 	if r.corsOptions == nil {
 		r.corsOptions = CorsDefaultOptions()
+	}
+	if r.corsOptions.Enabled {
+		if err := r.corsOptions.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid CORS configuration: %w", err)
+		}
 	}
 
 	if r.subgraphTransportOptions == nil {
@@ -450,7 +469,8 @@ func NewRouter(ctx context.Context, opts ...Option) (*Router, error) {
 			}
 		}
 
-		r.logger.Warn("No graph token provided. The following Cosmo Cloud features are disabled. Not recommended for Production.",
+		r.logger.Warn(
+			"No graph token provided. The following Cosmo Cloud features are disabled. Not recommended for Production.",
 			zap.Strings("features", disabledFeatures),
 		)
 	}
@@ -684,10 +704,9 @@ func (r *Router) initModules(ctx context.Context) error {
 		moduleInstance := moduleInfo.New()
 
 		mc := &ModuleContext{
-			Context:      ctx,
-			Module:       moduleInstance,
-			Logger:       r.logger.With(zap.String("module", string(moduleInfo.ID))),
-			HealthChecks: r.healthcheck,
+			Context: ctx,
+			Module:  moduleInstance,
+			Logger:  r.logger.With(zap.String("module", string(moduleInfo.ID))),
 		}
 
 		moduleConfig, ok := r.modulesConfig[string(moduleInfo.ID)]
@@ -767,13 +786,18 @@ func (r *Router) initModules(ctx context.Context) error {
 			r.subscriptionHooks.onReceiveEvents.handlers = append(r.subscriptionHooks.onReceiveEvents.handlers, handler.OnReceiveEvents)
 		}
 
+		if handler, ok := moduleInstance.(StreamBeforeEventsDispatchHandler); ok {
+			r.subscriptionHooks.beforeEventsDispatch.handlers = append(r.subscriptionHooks.beforeEventsDispatch.handlers, handler.BeforeEventsDispatch)
+		}
+
 		if handler, ok := moduleInstance.(SubscriptionOnCreateHandler); ok {
 			r.subscriptionHooks.onCreate.handlers = append(r.subscriptionHooks.onCreate.handlers, handler.SubscriptionOnCreate)
 		}
 
 		r.modules = append(r.modules, moduleInstance)
 
-		r.logger.Info("Module registered",
+		r.logger.Info(
+			"Module registered",
 			zap.String("id", string(moduleInfo.ID)),
 			zap.String("duration", time.Since(now).String()),
 		)
@@ -820,7 +844,6 @@ func (r *Router) NewServer(ctx context.Context) (Server, error) {
 		livenessCheckPath:  r.livenessCheckPath,
 		readinessCheckPath: r.readinessCheckPath,
 		healthCheckPath:    r.healthCheckPath,
-		gracePeriod:        r.routerGracePeriod,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server: %w", err)
@@ -890,7 +913,8 @@ func (r *Router) bootstrap(ctx context.Context) error {
 			// Only ensure sampling rate if the user exports traces to Cosmo Cloud
 			if cosmoCloudTracingEnabled {
 				if r.traceConfig.Sampler > float64(r.registrationInfo.AccountLimits.TraceSamplingRate) {
-					r.logger.Warn("Trace sampling rate is higher than account limit. Using account limit instead. Please contact support to increase your account limit.",
+					r.logger.Warn(
+						"Trace sampling rate is higher than account limit. Using account limit instead. Please contact support to increase your account limit.",
 						zap.Float64("limit", r.traceConfig.Sampler),
 						zap.String("account_limit", fmt.Sprintf("%.2f", r.registrationInfo.AccountLimits.TraceSamplingRate)),
 					)
@@ -900,81 +924,8 @@ func (r *Router) bootstrap(ctx context.Context) error {
 		}
 	}
 
-	if r.traceConfig.Enabled {
-		tp, err := rtrace.NewTracerProvider(ctx, &rtrace.ProviderConfig{
-			Logger:            r.logger,
-			Config:            r.traceConfig,
-			ServiceInstanceID: r.instanceID,
-			IPAnonymization: &attributeprocessor.IPAnonymizationConfig{
-				Enabled: r.ipAnonymization.Enabled,
-				Method:  attributeprocessor.IPAnonymizationMethod(r.ipAnonymization.Method),
-			},
-			SanitizeUTF8:   r.traceConfig.SanitizeUTF8,
-			MemoryExporter: r.traceConfig.TestMemoryExporter,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to start trace agent: %w", err)
-		}
-		r.tracerProvider = tp
-	}
-
-	// Prometheus metrics rely on OTLP metrics
-	if r.metricConfig.IsEnabled() {
-		if r.metricConfig.Prometheus.Enabled {
-			mp, registry, err := rmetric.NewPrometheusMeterProvider(ctx, r.metricConfig, r.instanceID)
-			if err != nil {
-				return fmt.Errorf("failed to create Prometheus exporter: %w", err)
-			}
-			r.promMeterProvider = mp
-
-			r.prometheusServer = rmetric.NewPrometheusServer(r.logger, r.metricConfig.Prometheus.ListenAddr, r.metricConfig.Prometheus.Path, registry)
-			go func() {
-				if err := r.prometheusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					r.logger.Error("Failed to start Prometheus server", zap.Error(err))
-				}
-			}()
-		}
-
-		if r.metricConfig.OpenTelemetry.Enabled {
-			mp, err := rmetric.NewOtlpMeterProvider(ctx, r.logger, r.metricConfig, r.instanceID)
-			if err != nil {
-				return fmt.Errorf("failed to start trace agent: %w", err)
-			}
-			r.otlpMeterProvider = mp
-		}
-
-	}
-
-	if r.graphqlMetricsConfig.Enabled {
-		client := graphqlmetricsv1connect.NewGraphQLMetricsServiceClient(
-			http.DefaultClient,
-			r.graphqlMetricsConfig.CollectorEndpoint,
-			connect.WithSendGzip(),
-		)
-		ge, err := graphqlmetrics.NewGraphQLMetricsExporter(
-			r.logger,
-			client,
-			r.graphApiToken,
-			exporter.NewDefaultExporterSettings(),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to validate graphql metrics exporter: %w", err)
-		}
-		r.gqlMetricsExporter = ge
-
-		r.logger.Info("GraphQL schema coverage metrics enabled")
-	}
-
-	// Create Prometheus metrics exporter for schema field usage
-	// Note: This is separate from the Prometheus meter provider which handles OTEL metrics
-	// This exporter is specifically for schema field usage tracking via the Prometheus sink
-	if r.metricConfig.Prometheus.PromSchemaFieldUsage.Enabled {
-		// The metric store will be passed in later when building the graph mux
-		// because each mux has its own metric store
-		// We'll create the exporter when building the mux in buildGraphMux
-		r.logger.Info("Prometheus schema field usage metrics enabled",
-			zap.Bool("include_operation_sha", r.metricConfig.Prometheus.PromSchemaFieldUsage.IncludeOperationSha),
-		)
+	if err := r.setupTelemetry(ctx); err != nil {
+		return err
 	}
 
 	if r.rateLimit != nil && r.rateLimit.Enabled {
@@ -987,6 +938,10 @@ func (r *Router) bootstrap(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create redis client: %w", err)
 		}
+	}
+
+	if err := r.setupResponseCache(ctx); err != nil {
+		return err
 	}
 
 	if err := r.startMCPServer(ctx); err != nil {
@@ -1101,8 +1056,8 @@ func (r *Router) bootstrap(ctx context.Context) error {
 			routerconfig.AssembleConfigRules{
 				SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
 				IgnoredFeatureFlags:     r.manifestConfig.IgnoredFeatureFlags,
-			})
-
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("failed to assemble static execution config from manifest: %w", err)
 		}
@@ -1128,6 +1083,270 @@ func (r *Router) bootstrap(ctx context.Context) error {
 			otel.SetTextMapPropagator(r.compositePropagator)
 		}
 	}
+
+	return nil
+}
+
+func (r *Router) setupTelemetry(ctx context.Context) error {
+	// Install the shared error handler for either signal, but don't change it in tests.
+	if (r.traceConfig.Enabled || r.metricConfig.OpenTelemetry.Enabled) &&
+		r.traceConfig.TestMemoryExporter == nil && r.metricConfig.OpenTelemetry.TestReader == nil {
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(rtrace.NewOtelErrorHandler(r.logger)))
+	}
+
+	if r.traceConfig.Enabled {
+		tp, err := rtrace.NewTracerProvider(ctx, &rtrace.ProviderConfig{
+			Logger:            r.logger,
+			Config:            r.traceConfig,
+			ServiceInstanceID: r.instanceID,
+			IPAnonymization: &attributeprocessor.IPAnonymizationConfig{
+				Enabled: r.ipAnonymization.Enabled,
+				Method:  attributeprocessor.IPAnonymizationMethod(r.ipAnonymization.Method),
+			},
+			SanitizeUTF8:   r.traceConfig.SanitizeUTF8,
+			MemoryExporter: r.traceConfig.TestMemoryExporter,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to start trace agent: %w", err)
+		}
+		r.tracerProvider = tp
+	}
+
+	// Prometheus metrics rely on OTLP metrics
+	if r.metricConfig.IsEnabled() {
+		if r.metricConfig.Prometheus.Enabled {
+			mp, registry, err := rmetric.NewPrometheusMeterProvider(ctx, r.metricConfig, r.instanceID)
+			if err != nil {
+				return fmt.Errorf("failed to create Prometheus exporter: %w", err)
+			}
+			r.promMeterProvider = mp
+
+			r.prometheusServer = rmetric.NewPrometheusServer(r.logger, r.metricConfig.Prometheus.ListenAddr, r.metricConfig.Prometheus.Path, registry)
+			go func() {
+				if err := r.prometheusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					r.logger.Error("Failed to start Prometheus server", zap.Error(err))
+				}
+			}()
+		}
+
+		if r.metricConfig.OpenTelemetry.Enabled {
+			mp, err := rmetric.NewOtlpMeterProvider(ctx, r.logger, r.metricConfig, r.instanceID)
+			if err != nil {
+				return fmt.Errorf("failed to start OTLP metrics meter provider: %w", err)
+			}
+			r.otlpMeterProvider = mp
+		}
+
+	}
+
+	if r.graphqlMetricsConfig.Enabled {
+		client := graphqlmetricsv1connect.NewGraphQLMetricsServiceClient(
+			http.DefaultClient,
+			r.graphqlMetricsConfig.CollectorEndpoint,
+			connect.WithSendGzip(),
+		)
+		ge, err := graphqlmetrics.NewGraphQLMetricsExporter(
+			r.logger,
+			client,
+			r.graphApiToken,
+			exporter.NewDefaultExporterSettings(),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to validate graphql metrics exporter: %w", err)
+		}
+		r.gqlMetricsExporter = ge
+
+		r.logger.Info("GraphQL schema coverage metrics enabled")
+	}
+
+	// Create Prometheus metrics exporter for schema field usage
+	// Note: This is separate from the Prometheus meter provider which handles OTEL metrics
+	// This exporter is specifically for schema field usage tracking via the Prometheus sink
+	if r.metricConfig.Prometheus.PromSchemaFieldUsage.Enabled {
+		// The metric store will be passed in later when building the graph mux
+		// because each mux has its own metric store
+		// We'll create the exporter when building the mux in buildGraphMux
+		r.logger.Info(
+			"Prometheus schema field usage metrics enabled",
+			zap.Bool("include_operation_sha", r.metricConfig.Prometheus.PromSchemaFieldUsage.IncludeOperationSha),
+		)
+	}
+
+	if r.pyroscopeConfig != nil && r.pyroscopeConfig.Enabled {
+		if r.pyroscopeConfig.Tags == nil {
+			r.pyroscopeConfig.Tags = make(map[string]string)
+		}
+
+		// Add default tags to the config
+		maps.Copy(r.pyroscopeConfig.Tags, pyroscope.RouterVersionTags(versioninfo.New(Version, Commit, Date)))
+
+		if r.hostName != "" {
+			r.pyroscopeConfig.Tags["hostname"] = r.hostName
+		}
+
+		if len(r.customModules) > 0 {
+			r.pyroscopeConfig.Tags["router_custom_modules"] = "true"
+		}
+
+		profiler, err := pyroscope.NewProfiler(r.logger, r.pyroscopeConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create pyroscope profiler: %w", err)
+		}
+
+		r.pyroscopeProfiler = profiler
+
+		r.logger.Info("Pyroscope profiling enabled", zap.String("server_address", r.pyroscopeConfig.ServerAddress))
+	}
+
+	return nil
+}
+
+// setupResponseCache builds the response cache when it is enabled. The storage
+// provider decides what it is built on: a redis instance declared under
+// storage_providers.redis and shared with every other replica, or a cache held
+// in this process alone.
+func (r *Router) setupResponseCache(ctx context.Context) error {
+	if r.responseCacheConfig == nil || !r.responseCacheConfig.Enabled {
+		return nil
+	}
+
+	if err := validateResponseCacheSubgraphs(r.responseCacheConfig, r.logger); err != nil {
+		return err
+	}
+	if err := validateResponseCacheTagHeader(r.responseCacheConfig.TagHeader); err != nil {
+		return err
+	}
+	var err error
+	switch provider := r.responseCacheConfig.Storage.Provider; provider {
+	case "", config.ResponseCacheStorageProviderRedis:
+		err = r.setupRedisResponseCache(ctx)
+	case config.ResponseCacheStorageProviderMemory:
+		err = r.setupInMemoryResponseCache()
+	default:
+		err = fmt.Errorf(
+			"response cache storage provider %q is not supported, use %q or %q",
+			provider,
+			config.ResponseCacheStorageProviderRedis,
+			config.ResponseCacheStorageProviderMemory,
+		)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err = r.startResponseCacheInvalidationServer(ctx); err != nil {
+		if closeErr := r.responseCache.Close(); closeErr != nil {
+			r.logger.Error("failed to close response cache after invalidation server setup failed", zap.Error(closeErr))
+		}
+		r.responseCache = nil
+		return err
+	}
+
+	return nil
+}
+
+// startResponseCacheInvalidationServer listens for invalidation requests.
+func (r *Router) startResponseCacheInvalidationServer(ctx context.Context) error {
+	if r.responseCache == nil || !r.responseCacheConfig.Invalidation.Endpoint.Enabled {
+		return nil
+	}
+
+	svr, err := invalidation.NewServer(r.logger, r.responseCacheConfig.Invalidation, r.responseCache)
+	if err != nil {
+		return fmt.Errorf("failed to create response cache invalidation server: %w", err)
+	}
+
+	lc := &net.ListenConfig{}
+	listener, err := lc.Listen(ctx, "tcp", svr.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind response cache invalidation server to %s: %w", svr.Addr, err)
+	}
+	r.responseCacheInvalidationServer = svr
+
+	go func() {
+		if err := svr.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			r.logger.Error("Failed to start response cache invalidation server", zap.Error(err))
+		}
+	}()
+
+	return nil
+}
+
+// setupInMemoryResponseCache builds a response cache held in this process. Nothing
+// is shared with any other replica and nothing survives a restart, which is the
+// whole difference from the redis backed one.
+func (r *Router) setupInMemoryResponseCache() error {
+	// The size is the adapter's to accept or refuse, bounds included, so it is
+	// passed on as it is rather than checked twice here against a second copy of
+	// the same limit.
+	cache, err := inmemorycache.NewInMemoryCache(r.responseCacheConfig.Storage.MaxEntries)
+	if err != nil {
+		return fmt.Errorf("failed to create response cache: %w", err)
+	}
+
+	// Owned from here on by r.responseCache, which Shutdown closes.
+	r.responseCache = cache
+
+	r.logger.Info(
+		"Response cache enabled",
+		zap.Duration("fallback_ttl", r.responseCacheConfig.All.FallbackTTL),
+		zap.Int("subgraph_overrides", len(r.responseCacheConfig.Subgraphs)),
+		zap.String("storage_provider", string(config.ResponseCacheStorageProviderMemory)),
+		zap.Int64("max_entries", r.responseCacheConfig.Storage.MaxEntries),
+	)
+
+	return nil
+}
+
+// setupRedisResponseCache builds a response cache on a redis instance declared
+// under storage_providers.redis.
+func (r *Router) setupRedisResponseCache(ctx context.Context) error {
+	providerID := r.responseCacheConfig.Storage.ProviderID
+	if providerID == "" {
+		return fmt.Errorf(
+			"response cache is enabled with the %q storage provider but no storage provider_id is configured; configure one, or set the storage provider to %q to cache in this router's memory instead",
+			config.ResponseCacheStorageProviderRedis,
+			config.ResponseCacheStorageProviderMemory,
+		)
+	}
+
+	provider, ok := r.providerRegistry.Redis(providerID)
+	if !ok {
+		return fmt.Errorf("response cache references unknown redis storage provider %q", providerID)
+	}
+
+	client, err := rd.NewRedisCloser(&rd.RedisCloserOptions{
+		URLs:           provider.URLs,
+		ClusterEnabled: provider.ClusterEnabled,
+		Logger:         r.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create redis client for response cache: %w", err)
+	}
+
+	cache, err := rediscache.NewRedisCache(ctx, client, r.responseCacheConfig.KeyPrefix)
+	if err != nil {
+		// Ownership of the client only passes to the cache once there is a cache,
+		// so on this path it is still ours and has to be closed here or it leaks
+		// along with its connection pool.
+		if closeErr := client.Close(); closeErr != nil {
+			r.logger.Error("failed to close redis client after response cache setup failed", zap.Error(closeErr))
+		}
+		return fmt.Errorf("failed to create response cache: %w", err)
+	}
+
+	// The cache owns the client from here on and closes it with itself, and
+	// Shutdown closes the cache.
+	r.responseCache = cache
+
+	r.logger.Info(
+		"Response cache enabled",
+		zap.Duration("fallback_ttl", r.responseCacheConfig.All.FallbackTTL),
+		zap.Int("subgraph_overrides", len(r.responseCacheConfig.Subgraphs)),
+		zap.String("storage_provider", string(config.ResponseCacheStorageProviderRedis)),
+		zap.String("key_prefix", r.responseCacheConfig.KeyPrefix),
+		zap.String("storage_provider_id", providerID),
+	)
 
 	return nil
 }
@@ -1169,7 +1388,12 @@ func (r *Router) startMCPServer(ctx context.Context) error {
 		mcpserver.WithEnableArbitraryOperations(r.mcp.EnableArbitraryOperations),
 		mcpserver.WithExposeSchema(r.mcp.ExposeSchema),
 		mcpserver.WithOmitToolNamePrefix(r.mcp.OmitToolNamePrefix),
+		mcpserver.WithOutputSchemaEnabled(r.mcp.OutputSchema.Enabled),
 		mcpserver.WithStateless(r.mcp.Session.Stateless),
+		mcpserver.WithInstructions(r.mcp.Server.Discover.Instructions),
+		mcpserver.WithServerVersion(cmp.Or(r.mcp.Server.Version, Version)),
+		mcpserver.WithServerTitle(r.mcp.Server.Title),
+		mcpserver.WithServerDescription(r.mcp.Server.Description),
 	}
 
 	if r.corsOptions != nil {
@@ -1224,7 +1448,7 @@ func (r *Router) buildClients(ctx context.Context) error {
 		return err
 	}
 
-	apqClient, err := r.buildAPQClient(registry)
+	apqStore, err := r.buildAPQStore(registry)
 	if err != nil {
 		return err
 	}
@@ -1239,7 +1463,7 @@ func (r *Router) buildClients(ctx context.Context) error {
 		pClient = nil
 	}
 
-	if pClient != nil || apqClient != nil || pqlStore != nil {
+	if pClient != nil || apqStore != nil || pqlStore != nil {
 		// For backwards compatibility with cdn config field
 		cacheSize := r.persistedOperationsConfig.Cache.Size.Uint64()
 		if cacheSize <= 0 {
@@ -1250,7 +1474,7 @@ func (r *Router) buildClients(ctx context.Context) error {
 			CacheSize:      cacheSize,
 			Logger:         r.logger,
 			ProviderClient: pClient,
-			ApqClient:      apqClient,
+			APQStore:       apqStore,
 			PQLStore:       pqlStore,
 		})
 		if err != nil {
@@ -1285,7 +1509,8 @@ func (r *Router) buildPersistedOpsClient(registry *ProviderRegistry) (persistedo
 			return nil, nil, fmt.Errorf("failed to create CDN client: %w", err)
 		}
 
-		r.logger.Info("Use CDN as storage provider for persisted operations",
+		r.logger.Info(
+			"Use CDN as storage provider for persisted operations",
 			zap.String("provider_id", provider.ID),
 		)
 		return c, c.ReadManifest, nil
@@ -1305,7 +1530,8 @@ func (r *Router) buildPersistedOpsClient(registry *ProviderRegistry) (persistedo
 			return nil, nil, fmt.Errorf("failed to create S3 client: %w", err)
 		}
 
-		r.logger.Info("Use S3 as storage provider for persisted operations",
+		r.logger.Info(
+			"Use S3 as storage provider for persisted operations",
 			zap.String("provider_id", provider.ID),
 		)
 		return c, c.ReadManifest, nil
@@ -1319,7 +1545,8 @@ func (r *Router) buildPersistedOpsClient(registry *ProviderRegistry) (persistedo
 			return nil, nil, fmt.Errorf("failed to create filesystem client: %w", err)
 		}
 
-		r.logger.Info("Use file system as storage provider for persisted operations",
+		r.logger.Info(
+			"Use file system as storage provider for persisted operations",
 			zap.String("provider_id", provider.ID),
 		)
 		// Filesystem does not support manifest fetching.
@@ -1338,7 +1565,8 @@ func (r *Router) buildPersistedOpsClient(registry *ProviderRegistry) (persistedo
 			return nil, nil, fmt.Errorf("failed to create CDN client: %w", err)
 		}
 
-		r.logger.Debug("Default to Cosmo CDN as persisted operations provider",
+		r.logger.Debug(
+			"Default to Cosmo CDN as persisted operations provider",
 			zap.String("url", r.cdnConfig.URL),
 		)
 		return c, c.ReadManifest, nil
@@ -1347,38 +1575,34 @@ func (r *Router) buildPersistedOpsClient(registry *ProviderRegistry) (persistedo
 	return nil, nil, nil
 }
 
-// buildAPQClient creates the automatic persisted queries client and its
-// optional Redis backing store.
-func (r *Router) buildAPQClient(registry *ProviderRegistry) (apq.Client, error) {
-	var kvClient apq.KVClient
-	if provider, ok := registry.Redis(r.automaticPersistedQueriesConfig.Storage.ProviderID); ok {
-		c, err := apq.NewRedisClient(&apq.RedisOptions{
-			Logger:        r.logger,
-			StorageConfig: &provider,
-			Prefix:        r.automaticPersistedQueriesConfig.Storage.ObjectPrefix,
-		})
-		if err != nil {
-			return nil, err
-		}
-		kvClient = c
-		r.logger.Info("Use redis as storage provider for automatic persisted operations",
-			zap.String("provider_id", provider.ID),
-		)
-	}
-
+// buildAPQStore creates the automatic persisted queries store.
+func (r *Router) buildAPQStore(registry *ProviderRegistry) (apq.Store, error) {
 	if !r.automaticPersistedQueriesConfig.Enabled {
 		return nil, nil
 	}
 
-	apqClient, err := apq.NewClient(&apq.Options{
-		Logger:    r.logger,
-		ApqConfig: &r.automaticPersistedQueriesConfig,
-		KVClient:  kvClient,
-	})
-	if err != nil {
-		return nil, err
+	ttl := time.Duration(r.automaticPersistedQueriesConfig.Cache.TTL) * time.Second
+	if provider, ok := registry.Redis(r.automaticPersistedQueriesConfig.Storage.ProviderID); ok {
+		store, err := apq.NewRedisStore(&apq.RedisOptions{
+			Logger:        r.logger,
+			StorageConfig: &provider,
+			Prefix:        r.automaticPersistedQueriesConfig.Storage.ObjectPrefix,
+			TTL:           ttl,
+		})
+		if err != nil {
+			return nil, err
+		}
+		r.logger.Info(
+			"Use redis as storage provider for automatic persisted operations",
+			zap.String("provider_id", provider.ID),
+		)
+		return store, nil
 	}
-	return apqClient, nil
+
+	return apq.NewMemoryStore(
+		int64(r.automaticPersistedQueriesConfig.Cache.Size.Uint64()),
+		ttl,
+	)
 }
 
 // buildManifestStore sets up the PQL manifest store and its background poller.
@@ -1421,7 +1645,8 @@ func (r *Router) buildManifestStore(ctx context.Context, registry *ProviderRegis
 				storageProviderID, err)
 		}
 
-		r.logger.Info("Loaded PQL manifest from storage provider",
+		r.logger.Info(
+			"Loaded PQL manifest from storage provider",
 			zap.String("provider_id", storageProviderID),
 			zap.String("object_path", objectPath),
 			zap.String("revision", pqlStore.Revision()),
@@ -1456,7 +1681,8 @@ func (r *Router) buildManifestStore(ctx context.Context, registry *ProviderRegis
 		return nil, fmt.Errorf("failed to fetch initial PQL manifest: %w", err)
 	}
 
-	r.logger.Info("Loaded PQL manifest from Cosmo CDN",
+	r.logger.Info(
+		"Loaded PQL manifest from Cosmo CDN",
 		zap.String("revision", pqlStore.Revision()),
 		zap.Int("operation_count", pqlStore.OperationCount()),
 	)
@@ -1506,7 +1732,6 @@ func (r *Router) Start(ctx context.Context) error {
 		livenessCheckPath:  r.livenessCheckPath,
 		readinessCheckPath: r.readinessCheckPath,
 		healthCheckPath:    r.healthCheckPath,
-		gracePeriod:        r.routerGracePeriod,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
@@ -1557,14 +1782,15 @@ func (r *Router) Start(ctx context.Context) error {
 	r.startPQLPoller(ctx)
 
 	if r.playgroundConfig.Enabled {
-		r.logger.Info("GraphQL endpoint",
+		r.logger.Info(
+			"GraphQL endpoint",
 			zap.String("method", http.MethodPost),
 			zap.String("url", r.graphqlEndpointURL),
 		)
 	}
 
 	/**
-	* Server logging after features has been initialized / disabled
+	 * Server logging after features has been initialized / disabled
 	 */
 
 	if r.localhostFallbackInsideDocker && docker.Inside() {
@@ -1572,7 +1798,8 @@ func (r *Router) Start(ctx context.Context) error {
 	}
 
 	if r.redisClient != nil {
-		r.logger.Info("Rate limiting enabled",
+		r.logger.Info(
+			"Rate limiting enabled",
 			zap.Int("rate", r.rateLimit.SimpleStrategy.Rate),
 			zap.Int("burst", r.rateLimit.SimpleStrategy.Burst),
 			zap.Duration("duration", r.rateLimit.SimpleStrategy.Period),
@@ -1598,7 +1825,8 @@ func (r *Router) Start(ctx context.Context) error {
 	// Mark the server as ready
 	r.httpServer.healthcheck.SetReady(true)
 
-	r.logger.Info("Server initialized and ready to serve requests",
+	r.logger.Info(
+		"Server initialized and ready to serve requests",
 		zap.String("listen_addr", r.listenAddr),
 		zap.Bool("playground", r.playgroundConfig.Enabled),
 		zap.Bool("introspection", r.introspection),
@@ -1648,7 +1876,8 @@ func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 
 	r.httpServer.healthcheck.SetReady(true)
 
-	r.logger.Info("Server initialized and ready to serve requests",
+	r.logger.Info(
+		"Server initialized and ready to serve requests",
 		zap.String("listen_addr", r.listenAddr),
 		zap.Bool("playground", r.playgroundConfig.Enabled),
 		zap.Bool("introspection", r.introspection),
@@ -1666,7 +1895,8 @@ func (r *Router) startWithStaticExecutionConfig(ctx context.Context) error {
 			}
 		}()
 
-		r.logger.Info("Watching config file for changes. Router will hot-reload automatically without downtime",
+		r.logger.Info(
+			"Watching config file for changes. Router will hot-reload automatically without downtime",
 			zap.String("path", path),
 		)
 
@@ -1709,7 +1939,6 @@ func (r *Router) buildExecutionConfigWatcher(ctx context.Context, ll *zap.Logger
 			}
 		},
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
 	}
@@ -1732,8 +1961,8 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 				r.manifestConfig.Path, routerconfig.AssembleConfigRules{
 					SkipMissingFeatureFlags: r.manifestConfig.SkipMissingFeatureFlags,
 					IgnoredFeatureFlags:     r.manifestConfig.IgnoredFeatureFlags,
-				})
-
+				},
+			)
 			if err != nil {
 				ll.Error("Failed to assemble static execution config from manifest", zap.Error(err))
 				return
@@ -1749,7 +1978,6 @@ func (r *Router) buildManifestConfigWatcher(ctx context.Context, ll *zap.Logger)
 			r.trackExecutionConfigUsage(cfg, true)
 		},
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
 	}
@@ -1850,6 +2078,16 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	if r.responseCacheInvalidationServer != nil {
+		if subErr := r.responseCacheInvalidationServer.Shutdown(ctx); subErr != nil {
+			err.Append(fmt.Errorf("failed to shutdown response cache invalidation server: %w", subErr))
+		}
+	}
+
+	if subErr := r.shutdownConnectionMetrics(ctx); subErr != nil {
+		err.Append(fmt.Errorf("failed to shutdown connection metrics: %w", subErr))
+	}
+
 	var wg sync.WaitGroup
 
 	if r.prometheusServer != nil {
@@ -1908,10 +2146,26 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		})
 	}
 
+	if r.pyroscopeProfiler != nil {
+		wg.Go(func() {
+			if subErr := r.pyroscopeProfiler.Stop(); subErr != nil {
+				err.Append(fmt.Errorf("failed to shutdown pyroscope profiler: %w", subErr))
+			}
+		})
+	}
+
 	if r.redisClient != nil {
 		wg.Go(func() {
 			if closeErr := r.redisClient.Close(); closeErr != nil {
 				err.Append(fmt.Errorf("failed to close redis client: %w", closeErr))
+			}
+		})
+	}
+
+	if r.responseCache != nil {
+		wg.Go(func() {
+			if closeErr := r.responseCache.Close(); closeErr != nil {
+				err.Append(fmt.Errorf("failed to close response cache: %w", closeErr))
 			}
 		})
 	}
@@ -1928,8 +2182,11 @@ func (r *Router) Shutdown(ctx context.Context) error {
 
 	// Shutdown the CDN operation client and free up resources
 	if r.persistedOperationClient != nil {
-		r.persistedOperationClient.Close()
+		if closeErr := r.persistedOperationClient.Close(); closeErr != nil {
+			err.Append(fmt.Errorf("failed to close persisted operation client: %w", closeErr))
+		}
 	}
+
 	if r.pqlStore != nil {
 		r.pqlStore.Close()
 	}
@@ -2052,6 +2309,12 @@ func WithGracePeriod(timeout time.Duration) Option {
 func WithMetrics(cfg *rmetric.Config) Option {
 	return func(r *Router) {
 		r.metricConfig = cfg
+	}
+}
+
+func WithPyroscope(cfg config.Pyroscope) Option {
+	return func(r *Router) {
+		r.pyroscopeConfig = &cfg
 	}
 }
 
@@ -2260,6 +2523,12 @@ func WithRateLimitConfig(cfg *config.RateLimitConfiguration) Option {
 	}
 }
 
+func WithResponseCache(cfg *config.ResponseCacheConfiguration) Option {
+	return func(r *Router) {
+		r.responseCacheConfig = cfg
+	}
+}
+
 func WithLocalhostFallbackInsideDocker(fallback bool) Option {
 	return func(r *Router) {
 		r.localhostFallbackInsideDocker = fallback
@@ -2350,7 +2619,6 @@ func NewSubgraphCircuitBreakerOptions(cfg config.TrafficShapingRules) *SubgraphC
 	// Subgraph specific circuit breakers
 	for k, v := range cfg.Subgraphs {
 		entry.SubgraphMap[k] = newCircuitBreakerConfig(v.CircuitBreaker)
-
 	}
 
 	return entry
@@ -2584,10 +2852,86 @@ func WithStreamsHandlerConfiguration(cfg config.StreamsHandlerConfiguration) Opt
 	return func(r *Router) {
 		r.subscriptionHooks.onReceiveEvents.maxConcurrentHandlers = cfg.OnReceiveEvents.MaxConcurrentHandlers
 		r.subscriptionHooks.onReceiveEvents.timeout = cfg.OnReceiveEvents.HandlerTimeout
+		r.subscriptionHooks.beforeEventsDispatch.timeout = cfg.BeforeEventsDispatch.HandlerTimeout
 	}
 }
 
 type ProxyFunc func(req *http.Request) (*url.URL, error)
+
+// connectionStatsEnabled reports whether any exporter asks for subgraph
+// connection statistics.
+func (r *Router) connectionStatsEnabled() bool {
+	return r.metricConfig.OpenTelemetry.ConnectionStats ||
+		r.metricConfig.Prometheus.ConnectionStats ||
+		r.metricConfig.OpenTelemetry.NetworkStats ||
+		r.metricConfig.Prometheus.NetworkStats
+}
+
+// connectionTraceDialer returns the router-scoped TraceDialer, or nil when
+// connection statistics are disabled. Router-scoped because a reused graph mux
+// keeps the transports, and therefore the stats, of the server that built it.
+// Unlocked: only newGraphServer touches the dialer, and it never runs concurrently.
+func (r *Router) connectionTraceDialer() *TraceDialer {
+	if !r.connectionStatsEnabled() {
+		return nil
+	}
+
+	if r.traceDialer == nil {
+		r.traceDialer = NewTraceDialer()
+	}
+	return r.traceDialer
+}
+
+// connectionMetricStore returns the router-scoped connection metric store, or
+// nil when traceDialer is nil. Created on the first graph server rather than in
+// setupTelemetry: it seeds the max-connections gauge from the transports, which
+// do not exist yet. Shut down in Router.Shutdown.
+func (r *Router) connectionMetricStore(ctx context.Context, traceDialer *TraceDialer) (*rmetric.ConnectionMetrics, error) {
+	if traceDialer == nil {
+		return nil, nil
+	}
+
+	r.connectionMetricsLock.Lock()
+	defer r.connectionMetricsLock.Unlock()
+
+	// Check if the router is shutting down to prevent creating asynchronous metrics.
+	if r.shutdown.Load() {
+		return nil, nil
+	}
+
+	if r.connectionMetrics == nil {
+		store, err := rmetric.NewConnectionMetricStore(
+			r.logger,
+			nil,
+			r.otlpMeterProvider,
+			r.promMeterProvider,
+			r.metricConfig,
+			traceDialer.connectionPoolStats,
+		)
+		if err != nil {
+			return nil, err
+		}
+		r.connectionMetrics = store
+	}
+
+	// Ensure to record max connections on each graph server creation.
+	r.connectionMetrics.RecordMaxConnections(ctx, traceDialer.connectionPoolStats)
+
+	return r.connectionMetrics, nil
+}
+
+// shutdownConnectionMetrics unregisters the store. Must run after r.shutdown is
+// set, so that a config reload still inside newGraphServer cannot create a new
+// store afterwards.
+func (r *Router) shutdownConnectionMetrics(ctx context.Context) error {
+	r.connectionMetricsLock.Lock()
+	defer r.connectionMetricsLock.Unlock()
+
+	if r.connectionMetrics == nil {
+		return nil
+	}
+	return r.connectionMetrics.Shutdown(ctx)
+}
 
 func newHTTPTransport(opts *TransportRequestOptions, proxy ProxyFunc, traceDialer *TraceDialer, subgraph string, clientTLS *tls.Config) *http.Transport {
 	dialer := &net.Dialer{

@@ -1,4 +1,6 @@
 import { formatDateTime } from '@/lib/format-date';
+import { useParams } from 'next/navigation';
+import { useQueryState } from 'nuqs';
 import { FederatedGraphsTable } from '@/pages/[organizationSlug]/[namespace]/subgraph/[subgraphSlug]/graphs';
 import { CheckCircleIcon, ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import { Component1Icon, HomeIcon } from '@radix-ui/react-icons';
@@ -15,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 const FeatureFlagOverview = ({
   federatedGraphs,
@@ -25,12 +28,11 @@ const FeatureFlagOverview = ({
   featureSubgraphs: Subgraph[];
   isEnabled: boolean;
 }) => {
-  const router = useRouter();
   const {
     namespace: { name: namespace },
   } = useWorkspace();
   const currentOrg = useCurrentOrganization();
-  const slug = router.query.slug as string;
+  const { slug } = useParams<{ slug: string }>();
 
   let content: React.ReactNode;
   if (featureSubgraphs.length === 0) {
@@ -80,7 +82,11 @@ const FeatureFlagOverview = ({
               This feature flag will be a part of compositions of this federated graph. Once the feature flag is
               composed successfully, you can query the feature flag in the{' '}
               <Link
-                href={`/${currentOrg?.slug}/${namespace}/graph/${slug}/playground`}
+                href={buildUrl('/:organization/:namespace/graph/:slug/playground', {
+                  organization: currentOrg?.slug,
+                  namespace,
+                  slug,
+                })}
                 className="text-sm text-primary"
               >
                 playground
@@ -140,8 +146,8 @@ export const FeatureFlagDetails = ({
   featureSubgraphs: Subgraph[];
 }) => {
   const router = useRouter();
-  const slug = router.query.slug as string;
-  const tab = router.query.tab as string;
+  const { slug } = useParams<{ slug: string }>();
+  const [tab] = useQueryState('tab');
   const { name, labels, createdAt, createdBy, isEnabled } = featureFlag;
 
   return (

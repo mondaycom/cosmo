@@ -1,4 +1,5 @@
 import { NamespaceGateEmptyState } from '@/components/dashboard/namespace-gate-empty-state';
+import { useParams } from 'next/navigation';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
 import { formatDateTime } from '@/lib/format-date';
 import { cn } from '@/lib/utils';
@@ -32,6 +33,7 @@ import { useCheckUserAccess } from '@/hooks/use-check-user-access';
 import { useUser } from '@/hooks/use-user';
 import { useStarBannerDisabled } from '@/hooks/use-star-banner-disabled';
 import { useWorkspace } from '@/hooks/use-workspace';
+import { buildUrl } from '@/lib/build-url';
 
 export const StarBanner = ({
   isDisabled,
@@ -106,7 +108,7 @@ export const OrganizationBanner = () => {
 export const DashboardLayout = ({ children }: LayoutProps) => {
   const router = useRouter();
   const user = useUser();
-  const organizationSlug = router.query.organizationSlug as string;
+  const { organizationSlug } = useParams<{ organizationSlug: string }>();
   const checkUserAccess = useCheckUserAccess();
   const [isStarBannerDisabled, setDisableStarBanner] = useStarBannerDisabled();
   const { namespace, namespaceByName, isLoading: isWorkspaceLoading } = useWorkspace();
@@ -128,8 +130,10 @@ export const DashboardLayout = ({ children }: LayoutProps) => {
   );
 
   const links = useMemo(() => {
-    const basePath = `/${user?.currentOrganization.slug || organizationSlug}`;
     const nsQueryString = `?namespace=${encodeURIComponent(namespace.name)}`;
+    const basePath = buildUrl('/:organizationSlug', {
+      organizationSlug: user?.currentOrganization.slug || organizationSlug,
+    });
 
     const navigation: Partial<NavLink>[] = [
       {

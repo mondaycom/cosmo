@@ -1,4 +1,5 @@
 import { GraphContext } from '@/components/layout/graph-layout';
+import { useCheckParams } from '@/hooks/use-check-params';
 import { useUser } from '@/hooks/use-user';
 import { cn } from '@/lib/utils';
 import { CheckCircleIcon, NoSymbolIcon } from '@heroicons/react/24/outline';
@@ -14,6 +15,7 @@ import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, Tabl
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { buildUrl } from '@/lib/build-url';
 
 export const GraphPruningIssuesTable = ({
   pruneIssues,
@@ -27,6 +29,7 @@ export const GraphPruningIssuesTable = ({
   hasGraphPruningErrors: boolean;
 }) => {
   const router = useRouter();
+  const { slug, checkId } = useCheckParams();
   const user = useUser();
   const graphContext = useContext(GraphContext);
   const {
@@ -102,11 +105,14 @@ export const GraphPruningIssuesTable = ({
                     <TooltipTrigger asChild>
                       <Button asChild variant="ghost" size="sm" className="table-action">
                         <Link
-                          href={`/${organizationSlug}/${namespace}/graph/${router.query.slug}/checks/${
-                            router.query.checkId
-                          }?tab=schema&${l.subgraphName ? `subgraph=${l.subgraphName}` : ''}${
-                            l.issueLocation?.line ? `#L${l.issueLocation?.line}` : ''
-                          }`}
+                          href={buildUrl('/:organizationSlug/:namespace/graph/:slug/checks/:checkId', {
+                            organizationSlug,
+                            namespace,
+                            slug,
+                            checkId,
+                            tab: 'schema',
+                            subgraph: l.subgraphName,
+                          })}
                         >
                           View
                         </Link>

@@ -1,4 +1,5 @@
 import { EmptyState } from '@/components/empty-state';
+import { useParams } from 'next/navigation';
 import { SubgraphPageLayout, getSubgraphLayout } from '@/components/layout/subgraph-layout';
 import { AddSubgraphUsersContent } from '@/components/subgraphs-table';
 import { Badge } from '@/components/ui/badge';
@@ -18,10 +19,10 @@ import {
 import { SubgraphType } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
 import { formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
-import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { useWorkspace } from '@/hooks/use-workspace';
 import { SafeMarkdown } from '@/components/safe-markdown';
+import { buildUrl } from '@/lib/build-url';
 
 export const Empty = ({ subgraphName }: { subgraphName: string }) => {
   const {
@@ -53,7 +54,7 @@ export const Empty = ({ subgraphName }: { subgraphName: string }) => {
 };
 
 const SubgraphOverviewPage = () => {
-  const router = useRouter();
+  const { organizationSlug } = useParams<{ organizationSlug: string }>();
   const graph = useSubgraph();
   const { data } = useQuery(getOrganizationMembers);
 
@@ -145,7 +146,11 @@ const SubgraphOverviewPage = () => {
               <dt className="text-sm text-muted-foreground">Linked Subgraph</dt>
               <dd className="flex gap-x-2">
                 <Link
-                  href={`/${router.query.organizationSlug}/${linkedSubgraph.namespace}/subgraph/${linkedSubgraph.name}`}
+                  href={buildUrl('/:organizationSlug/:namespace/subgraph/:name', {
+                    organizationSlug,
+                    namespace: linkedSubgraph.namespace,
+                    name: linkedSubgraph.name,
+                  })}
                   className="flex items-center gap-1 hover:underline"
                 >
                   {`${linkedSubgraph.namespace}/${linkedSubgraph.name}`}

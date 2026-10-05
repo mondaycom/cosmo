@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,10 @@ const (
 	myRedisProviderID     = "my-redis"
 )
 
+// Handler defines what is run inside the test environment.
+// It is provided to testenv.Run and executed inside it.
+type Handler func(t *testing.T, xEnv *Environment)
+
 var (
 	//go:embed testdata/config.json
 	ConfigJSONTemplate string
@@ -95,6 +100,9 @@ var (
 	ConfigWithPluginsJSONTemplate string
 	//go:embed testdata/configWithGRPC.json
 	ConfigWithGRPCJSONTemplate string
+
+	//go:embed testdata/natsSubscriptionFilter.json
+	NatsSubscriptionFilterJSONTemplate string
 
 	// routerTestsDir is the absolute path to the router-tests directory,
 	// derived from this source file's location. Used internally by testexec.go
@@ -114,7 +122,7 @@ func init() {
 }
 
 // Run runs the test and fails the test if an error occurs
-func Run(t *testing.T, cfg *Config, f func(t *testing.T, xEnv *Environment)) {
+func Run(t *testing.T, cfg *Config, f Handler) {
 	t.Helper()
 	env, err := CreateTestEnv(t, cfg)
 	if env != nil {
@@ -1383,6 +1391,8 @@ func configureRouter(ctx context.Context, listenerAddr string, testConfig *Confi
 		EnableRequestTracing:              true,
 		EnableNormalizationCache:          true,
 		EnableDefer:                       true,
+		EnableMultiFetch:                  true,
+		EnableScheduleFetches:             true,
 		NormalizationCacheSize:            1024,
 		Debug: config.EngineDebugConfiguration{
 			ReportWebSocketConnections: true,
@@ -1823,8 +1833,11 @@ func SetupCDNServer(t testing.TB) (cdnServer *httptest.Server, port int) {
 	baseCdnFile := filepath.Join(path.Dir(filePath), "testdata", "cdn")
 	cdnFileServer := http.FileServer(http.Dir(baseCdnFile))
 	var cdnRequestLog []string
+	var cdnRequestLogMu sync.Mutex
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
+			cdnRequestLogMu.Lock()
+			defer cdnRequestLogMu.Unlock()
 			requestLog, err := json.Marshal(cdnRequestLog)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1839,7 +1852,9 @@ func SetupCDNServer(t testing.TB) (cdnServer *httptest.Server, port int) {
 			return
 		}
 
+		cdnRequestLogMu.Lock()
 		cdnRequestLog = append(cdnRequestLog, r.Method+" "+r.URL.Path)
+		cdnRequestLogMu.Unlock()
 		// Ensure we have an authorization header with a valid token
 		authorization := r.Header.Get("Authorization")
 		token, ok := strings.CutPrefix(authorization, "Bearer ")
@@ -2036,12 +2051,13 @@ func (e *Environment) Shutdown() {
 		}
 	}
 
-	// Flush Kafka connection
+	// Flush Kafka connection and close client
 	if e.cfg.EnableKafka && e.KafkaClient != nil {
 		err := e.KafkaClient.Flush(ctx)
 		if err != nil {
 			e.t.Logf("could not flush Kafka connection: %s", err)
 		}
+		e.KafkaClient.Close()
 	}
 
 	if e.routerCmd != nil {

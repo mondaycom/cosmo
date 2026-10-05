@@ -177,6 +177,56 @@ engine:
 	})
 }
 
+func TestEventsSkipUnavailableProvidersConfigLoading(t *testing.T) {
+	t.Run("defaults to true", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+`)
+
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.True(t, cfg.Config.Events.SkipUnavailableProviders)
+	})
+
+	t.Run("can be disabled from yaml", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+events:
+  skip_unavailable_providers: false
+`)
+
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.False(t, cfg.Config.Events.SkipUnavailableProviders)
+	})
+
+	t.Run("can be disabled from env", func(t *testing.T) {
+		t.Setenv("EVENTS_SKIP_UNAVAILABLE_PROVIDERS", "false")
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+`)
+
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.False(t, cfg.Config.Events.SkipUnavailableProviders)
+	})
+}
+
 // Confirms https://github.com/caarlos0/env/issues/354 is fixed
 func TestConfigSlicesHaveDefaults(t *testing.T) {
 	t.Parallel()
@@ -466,6 +516,18 @@ graph:
 	)
 
 	g.AssertJson(t, "config_defaults", cfg.Config)
+}
+
+func TestJWTOnErrorRejectsInvalidYAML(t *testing.T) {
+	t.Parallel()
+	cases := []string{"unknown", "42"}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			var cfg JWTAuthenticationConfiguration
+			err := yaml.Unmarshal([]byte("on_error: "+value), &cfg)
+			require.ErrorContains(t, err, "authentication.jwt.on_error")
+		})
+	}
 }
 
 func TestOverrides(t *testing.T) {
@@ -2259,5 +2321,524 @@ persisted_operations:
 		require.ErrorAs(t, err, &js)
 		require.Equal(t, []string{"persisted_operations", "manifest", "poll_jitter"}, js.Causes[0].InstanceLocation)
 		require.Equal(t, "at '/persisted_operations/manifest/poll_jitter': duration must be greater or equal than 1s", js.Causes[0].Error())
+	})
+}
+
+func TestMCPServerConfig(t *testing.T) {
+	t.Run("reads discover instructions from yaml", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    discover:
+      instructions: "Use the search tools before executing operations."
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, "Use the search tools before executing operations.", cfg.Config.MCP.Server.Discover.Instructions)
+	})
+
+	t.Run("leaves discover instructions empty when unset", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Empty(t, cfg.Config.MCP.Server.Discover.Instructions)
+	})
+
+	t.Run("reads discover instructions from env", func(t *testing.T) {
+		t.Setenv("MCP_SERVER_DISCOVER_INSTRUCTIONS", "Env-provided guidance.")
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, "Env-provided guidance.", cfg.Config.MCP.Server.Discover.Instructions)
+	})
+
+	t.Run("reads the server version from yaml", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    version: "1.4.0"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, "1.4.0", cfg.Config.MCP.Server.Version)
+	})
+
+	t.Run("reads the server title and description from yaml", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    title: "My Commerce API"
+    description: "Query products, orders and customers."
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, "My Commerce API", cfg.Config.MCP.Server.Title)
+		require.Equal(t, "Query products, orders and customers.", cfg.Config.MCP.Server.Description)
+	})
+}
+
+func TestMCPOAuthAuthorizationServerURLs(t *testing.T) {
+	t.Run("reads multiple authorization server urls from yaml", func(t *testing.T) {
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    base_url: "https://router.example.com"
+  oauth:
+    enabled: true
+    jwks:
+      - url: "https://auth-a.example.com/.well-known/jwks.json"
+    authorization_server_urls:
+      - "https://auth-a.example.com"
+      - "https://auth-b.example.com"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, []string{
+			"https://auth-a.example.com",
+			"https://auth-b.example.com",
+		}, cfg.Config.MCP.OAuth.AuthorizationServerURLs)
+	})
+
+	t.Run("reads multiple authorization server urls from the environment", func(t *testing.T) {
+		t.Setenv("MCP_OAUTH_AUTHORIZATION_SERVER_URLS", "https://auth-a.example.com,https://auth-b.example.com")
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    base_url: "https://router.example.com"
+  oauth:
+    enabled: true
+    jwks:
+      - url: "https://auth-a.example.com/.well-known/jwks.json"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, []string{
+			"https://auth-a.example.com",
+			"https://auth-b.example.com",
+		}, cfg.Config.MCP.OAuth.AuthorizationServerURLs)
+	})
+
+	t.Run("keeps the single authorization server url working", func(t *testing.T) {
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+graph:
+  token: "token"
+
+mcp:
+  enabled: true
+  server:
+    base_url: "https://router.example.com"
+  oauth:
+    enabled: true
+    jwks:
+      - url: "https://auth-a.example.com/.well-known/jwks.json"
+    authorization_server_url: "https://auth-a.example.com"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		require.Equal(t, "https://auth-a.example.com", cfg.Config.MCP.OAuth.AuthorizationServerURL)
+		require.Equal(t, []string{"https://auth-a.example.com"}, cfg.Config.MCP.OAuth.AuthorizationServers())
+	})
+}
+
+func TestMCPOAuthAuthorizationServersAccessor(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		config   MCPOAuthConfiguration
+		expected []string
+	}{
+		{
+			name:     "empty config returns nil",
+			config:   MCPOAuthConfiguration{},
+			expected: nil,
+		},
+		{
+			name: "single url only",
+			config: MCPOAuthConfiguration{
+				AuthorizationServerURL: "https://auth-a.example.com",
+			},
+			expected: []string{"https://auth-a.example.com"},
+		},
+		{
+			name: "multiple urls only",
+			config: MCPOAuthConfiguration{
+				AuthorizationServerURLs: []string{"https://auth-a.example.com", "https://auth-b.example.com"},
+			},
+			expected: []string{"https://auth-a.example.com", "https://auth-b.example.com"},
+		},
+		{
+			name: "single url comes first and duplicates are removed",
+			config: MCPOAuthConfiguration{
+				AuthorizationServerURL:  "https://auth-a.example.com",
+				AuthorizationServerURLs: []string{"https://auth-b.example.com", "https://auth-a.example.com"},
+			},
+			expected: []string{"https://auth-a.example.com", "https://auth-b.example.com"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tc.expected, tc.config.AuthorizationServers())
+		})
+	}
+}
+
+func TestResponseCacheStorageConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the storage provider defaults to redis", func(t *testing.T) {
+		t.Parallel()
+
+		// The default is the one of the two that must never be arrived at by
+		// accident: caching in memory means a cache per replica, so it is only
+		// ever reached by naming it.
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+storage_providers:
+  redis:
+    - id: my_redis
+      urls:
+        - "redis://localhost:6379"
+
+response_cache:
+  enabled: true
+  storage:
+    provider_id: my_redis
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.Equal(t, ResponseCacheStorageProviderRedis, cfg.Config.ResponseCache.Storage.Provider)
+		require.Equal(t, int64(10000), cfg.Config.ResponseCache.Storage.MaxEntries)
+	})
+
+	t.Run("the memory provider needs no provider_id", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    provider: memory
+    max_entries: 2048
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.Equal(t, ResponseCacheStorageProviderMemory, cfg.Config.ResponseCache.Storage.Provider)
+		require.Equal(t, int64(2048), cfg.Config.ResponseCache.Storage.MaxEntries)
+	})
+
+	t.Run("enabling the cache requires a storage block", func(t *testing.T) {
+		t.Parallel()
+
+		// Turning the cache on without saying where entries go has no reading
+		// that is safe to guess at: the provider defaults to redis, which cannot
+		// work without a provider_id, so the whole block has to be demanded
+		// rather than half of it defaulted.
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache'")
+		require.ErrorContains(t, err, "missing property 'storage'")
+	})
+
+	t.Run("a disabled cache needs no storage block", func(t *testing.T) {
+		t.Parallel()
+
+		// The storage requirement hangs off enabled, so the block a user leaves
+		// behind while the cache is off must still load.
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: false
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.False(t, cfg.Config.ResponseCache.Enabled)
+	})
+
+	t.Run("the redis provider requires a provider_id", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    provider: redis
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/storage'")
+		require.ErrorContains(t, err, "missing property 'provider_id'")
+	})
+
+	t.Run("an unnamed provider requires a provider_id", func(t *testing.T) {
+		t.Parallel()
+
+		// An absent provider is redis, so leaving both out has to be refused
+		// rather than quietly caching in memory.
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    max_entries: 2048
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/storage'")
+		require.ErrorContains(t, err, "missing property 'provider_id'")
+	})
+
+	t.Run("an unknown storage provider is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    provider: memcached
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/storage/provider'")
+	})
+
+	t.Run("max_entries must be positive", func(t *testing.T) {
+		t.Parallel()
+
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    provider: memory
+    max_entries: 0
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/storage/max_entries'")
+	})
+
+	t.Run("max_entries is capped", func(t *testing.T) {
+		t.Parallel()
+
+		// Mirrors the in memory adapter's own limit. The adapter stays the
+		// enforcement; this is here so the yaml path fails with a precise message
+		// instead of at startup.
+		f := createTempFileFromFixture(t, `
+version: "1"
+
+response_cache:
+  enabled: true
+  storage:
+    provider: memory
+    max_entries: 200000
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/storage/max_entries'")
+	})
+
+}
+
+// TestLoadResponseCacheStorageCfgFromEnvars asserts the RESPONSE_CACHE_ + STORAGE_
+// envPrefix pair composes down to the leaf env names, which is the only way to
+// reach the storage configuration without a yaml file.
+func TestLoadResponseCacheStorageCfgFromEnvars(t *testing.T) {
+	t.Setenv("RESPONSE_CACHE_ENABLED", "true")
+	t.Setenv("RESPONSE_CACHE_STORAGE_PROVIDER", "memory")
+	t.Setenv("RESPONSE_CACHE_STORAGE_MAX_ENTRIES", "4096")
+
+	f := createTempFileFromFixture(t, `
+version: "1"
+`)
+
+	cfg, err := LoadConfig([]string{f})
+
+	require.NoError(t, err)
+	require.True(t, cfg.Config.ResponseCache.Enabled)
+	require.Equal(t, ResponseCacheStorageProviderMemory, cfg.Config.ResponseCache.Storage.Provider)
+	require.Equal(t, int64(4096), cfg.Config.ResponseCache.Storage.MaxEntries)
+}
+
+// TestResponseCacheSubgraphConfig covers the all/subgraphs split: a subgraphs
+// entry never passes through env parsing, so it is explicit, and nothing under
+// all leaks into it.
+func TestResponseCacheSubgraphConfig(t *testing.T) {
+	t.Run("a map entry is explicit, nothing is defaulted or taken from all", func(t *testing.T) {
+		f := createTempFileFromFixture(t, `
+version: "1"
+response_cache:
+  all:
+    fallback_ttl: 2m
+    private_id: "request.auth.claims.sub"
+  subgraphs:
+    products:
+      fallback_ttl: 5m
+    inventory:
+      enabled: false
+    reviews:
+      enabled: true
+      fallback_ttl: 10s
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+
+		rc := cfg.Config.ResponseCache
+		require.True(t, rc.All.Enabled)
+		require.Equal(t, 2*time.Minute, rc.All.FallbackTTL)
+
+		products := rc.Subgraphs["products"]
+		require.False(t, products.Enabled, "a fallback_ttl alone does not enable an entry")
+		require.Equal(t, 5*time.Minute, products.FallbackTTL)
+		require.Empty(t, products.PrivateID, "nothing is inherited from all")
+
+		inventory := rc.Subgraphs["inventory"]
+		require.False(t, inventory.Enabled)
+		require.Zero(t, inventory.FallbackTTL, "no default, and not all's 2m")
+
+		reviews := rc.Subgraphs["reviews"]
+		require.True(t, reviews.Enabled)
+		require.Equal(t, 10*time.Second, reviews.FallbackTTL)
+
+	})
+
+	t.Run("an all block that omits a key keeps the env value", func(t *testing.T) {
+		t.Setenv("RESPONSE_CACHE_ALL_FALLBACK_TTL", "5m")
+		f := createTempFileFromFixture(t, `
+version: "1"
+response_cache:
+  all:
+    private_id: "request.auth.claims.sub"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.Equal(t, 5*time.Minute, cfg.Config.ResponseCache.All.FallbackTTL)
+		require.Equal(t, "request.auth.claims.sub", cfg.Config.ResponseCache.All.PrivateID)
+	})
+
+	t.Run("all is reachable from env", func(t *testing.T) {
+		t.Setenv("RESPONSE_CACHE_ALL_ENABLED", "false")
+		t.Setenv("RESPONSE_CACHE_ALL_PRIVATE_ID", "request.header.Get('X-User-Id')")
+		f := createTempFileFromFixture(t, `
+version: "1"
+`)
+		cfg, err := LoadConfig([]string{f})
+		require.NoError(t, err)
+		require.False(t, cfg.Config.ResponseCache.All.Enabled)
+		require.Equal(t, "request.header.Get('X-User-Id')", cfg.Config.ResponseCache.All.PrivateID)
+	})
+
+	t.Run("a top level fallback_ttl is refused", func(t *testing.T) {
+		f := createTempFileFromFixture(t, `
+version: "1"
+response_cache:
+  fallback_ttl: 30s
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache'")
+	})
+
+	t.Run("a too short subgraph fallback_ttl is refused", func(t *testing.T) {
+		f := createTempFileFromFixture(t, `
+version: "1"
+response_cache:
+  subgraphs:
+    products:
+      fallback_ttl: 500ms
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/subgraphs/products/fallback_ttl'")
+	})
+
+	t.Run("an unknown key in a subgraph entry is refused", func(t *testing.T) {
+		f := createTempFileFromFixture(t, `
+version: "1"
+response_cache:
+  subgraphs:
+    products:
+      ttl: 5m
+`)
+		_, err := LoadConfig([]string{f})
+		require.ErrorContains(t, err, "at '/response_cache/subgraphs/products'")
 	})
 }
