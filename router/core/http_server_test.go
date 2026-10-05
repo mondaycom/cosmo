@@ -146,6 +146,8 @@ func getReused(t *testing.T, client *http.Client, url string) (*http.Response, b
 	return resp, reused
 }
 
+// TestServer_KeepAliveWhenNotDraining verifies that responses keep the connection alive and
+// allow its reuse until StartDraining is called.
 func TestServer_KeepAliveWhenNotDraining(t *testing.T) {
 	srv, base := startTestServer(t)
 	client := &http.Client{Transport: &http.Transport{}}
@@ -160,6 +162,8 @@ func TestServer_KeepAliveWhenNotDraining(t *testing.T) {
 	assert.True(t, reused)
 }
 
+// TestServer_DrainingSetsConnectionClose verifies that after StartDraining every response carries
+// "Connection: close" and the client cannot reuse the connection.
 func TestServer_DrainingSetsConnectionClose(t *testing.T) {
 	srv, base := startTestServer(t)
 	client := &http.Client{Transport: &http.Transport{}}
@@ -176,6 +180,8 @@ func TestServer_DrainingSetsConnectionClose(t *testing.T) {
 	assert.False(t, reused)
 }
 
+// TestServer_DrainingSkipsUpgrade verifies that draining does not add "Connection: close" to
+// upgrade requests (e.g. WebSocket handshakes).
 func TestServer_DrainingSkipsUpgrade(t *testing.T) {
 	srv, base := startTestServer(t)
 	client := &http.Client{Transport: &http.Transport{}}
@@ -192,5 +198,5 @@ func TestServer_DrainingSkipsUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 
-	assert.NotContains(t, resp.Header.Values("Connection"), "close")
+	assert.False(t, resp.Close, "upgrade request must not force connection close")
 }

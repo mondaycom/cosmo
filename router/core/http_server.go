@@ -75,6 +75,8 @@ type httpServerOptions struct {
 	gracePeriod        time.Duration
 }
 
+// newServer binds the listener synchronously, so port conflicts surface immediately, and builds
+// the HTTP server with its handler chain.
 func newServer(opts *httpServerOptions) (*server, error) {
 	// Bind the port synchronously to detect port conflicts immediately
 	listener, err := net.Listen("tcp", opts.addr)
