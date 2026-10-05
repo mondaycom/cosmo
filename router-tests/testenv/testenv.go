@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1390,6 +1391,8 @@ func configureRouter(ctx context.Context, listenerAddr string, testConfig *Confi
 		EnableRequestTracing:              true,
 		EnableNormalizationCache:          true,
 		EnableDefer:                       true,
+		EnableMultiFetch:                  true,
+		EnableScheduleFetches:             true,
 		NormalizationCacheSize:            1024,
 		Debug: config.EngineDebugConfiguration{
 			ReportWebSocketConnections: true,
@@ -1830,8 +1833,11 @@ func SetupCDNServer(t testing.TB) (cdnServer *httptest.Server, port int) {
 	baseCdnFile := filepath.Join(path.Dir(filePath), "testdata", "cdn")
 	cdnFileServer := http.FileServer(http.Dir(baseCdnFile))
 	var cdnRequestLog []string
+	var cdnRequestLogMu sync.Mutex
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
+			cdnRequestLogMu.Lock()
+			defer cdnRequestLogMu.Unlock()
 			requestLog, err := json.Marshal(cdnRequestLog)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1846,7 +1852,9 @@ func SetupCDNServer(t testing.TB) (cdnServer *httptest.Server, port int) {
 			return
 		}
 
+		cdnRequestLogMu.Lock()
 		cdnRequestLog = append(cdnRequestLog, r.Method+" "+r.URL.Path)
+		cdnRequestLogMu.Unlock()
 		// Ensure we have an authorization header with a valid token
 		authorization := r.Header.Get("Authorization")
 		token, ok := strings.CutPrefix(authorization, "Bearer ")

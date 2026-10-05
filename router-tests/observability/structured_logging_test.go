@@ -1809,7 +1809,7 @@ func TestFlakyAccessLogs(t *testing.T) {
 			}, func(t *testing.T, xEnv *testenv.Environment) {
 				res, err := xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{
 					OperationName: []byte(`"Employees"`),
-					Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f"}}`),
+					Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937"}}`),
 					Header:        map[string][]string{"service-name": {"service-name"}, "graphql-client-name": {"my-client"}},
 				})
 				require.NoError(t, err)
@@ -1829,9 +1829,9 @@ func TestFlakyAccessLogs(t *testing.T) {
 					"query":                    "", // http query is empty
 					"ip":                       "[REDACTED]",
 					"service_name":             "service-name",                                                     // From request header
-					"operation_persisted_hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f", // From context
+					"operation_persisted_hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937", // From context
 					"operation_hash":           "1163600561566987607",                                              // From context
-					"operation_sha256":         "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f", // From context
+					"operation_sha256":         "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937", // From context
 					"operation_name":           "Employees",                                                        // From context
 					"operation_type":           "query",                                                            // From context
 				}
@@ -2063,7 +2063,7 @@ func TestFlakyAccessLogs(t *testing.T) {
 				func(t *testing.T, xEnv *testenv.Environment) {
 					res, err := xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{
 						OperationName: []byte(`"Employees"`),
-						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f"}}`),
+						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937"}}`),
 						Header:        map[string][]string{"graphql-client-name": {"my-client"}},
 					})
 					require.NoError(t, err)
@@ -2075,7 +2075,7 @@ func TestFlakyAccessLogs(t *testing.T) {
 
 					val, ok := requestContext["operation_sha256_expression"].(string)
 					require.True(t, ok)
-					require.Equal(t, "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f", val)
+					require.Equal(t, "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937", val)
 				},
 			)
 		})
@@ -2137,7 +2137,7 @@ func TestFlakyAccessLogs(t *testing.T) {
 				func(t *testing.T, xEnv *testenv.Environment) {
 					res, err := xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{
 						OperationName: []byte(`"Employees"`),
-						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f"}}`),
+						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937"}}`),
 						Header:        map[string][]string{"graphql-client-name": {"my-client"}},
 					})
 					require.NoError(t, err)
@@ -2149,7 +2149,7 @@ func TestFlakyAccessLogs(t *testing.T) {
 
 					val, ok := requestContext["persisted_id_expression"].(string)
 					require.True(t, ok)
-					require.Equal(t, "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f", val)
+					require.Equal(t, "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937", val)
 				},
 			)
 
@@ -3653,6 +3653,70 @@ func TestFlakyAccessLogs(t *testing.T) {
 			})
 		})
 
+		t.Run("verify timeToLastRequestByte value is attached", func(t *testing.T) {
+			t.Parallel()
+
+			testenv.Run(t, &testenv.Config{
+				SubgraphAccessLogsEnabled: true,
+				SubgraphAccessLogFields: []config.CustomAttribute{
+					{
+						Key: "time_to_last_request_byte",
+						ValueFrom: &config.CustomDynamicAttribute{
+							Expression: "subgraph.request.clientTrace.timeToLastRequestByte",
+						},
+					},
+				},
+				LogObservation: testenv.LogObservationConfig{
+					Enabled:  true,
+					LogLevel: zapcore.InfoLevel,
+				},
+			}, func(t *testing.T, xEnv *testenv.Environment) {
+				xEnv.MakeGraphQLRequestOK(testenv.GraphQLRequest{
+					Query: `query myQuery { employees { id } }`,
+				})
+				requestLog := xEnv.Observer().FilterMessage("/graphql")
+				requestLogAll := requestLog.All()
+				requestContextMap := requestLogAll[0].ContextMap()
+
+				timeToLastRequestByte, ok := requestContextMap["time_to_last_request_byte"].(time.Duration)
+				require.True(t, ok)
+
+				require.Greater(t, int(timeToLastRequestByte), 0)
+			})
+		})
+
+		t.Run("verify timeToLastByte value is attached", func(t *testing.T) {
+			t.Parallel()
+
+			testenv.Run(t, &testenv.Config{
+				SubgraphAccessLogsEnabled: true,
+				SubgraphAccessLogFields: []config.CustomAttribute{
+					{
+						Key: "time_to_last_byte",
+						ValueFrom: &config.CustomDynamicAttribute{
+							Expression: "subgraph.request.clientTrace.timeToLastByte",
+						},
+					},
+				},
+				LogObservation: testenv.LogObservationConfig{
+					Enabled:  true,
+					LogLevel: zapcore.InfoLevel,
+				},
+			}, func(t *testing.T, xEnv *testenv.Environment) {
+				xEnv.MakeGraphQLRequestOK(testenv.GraphQLRequest{
+					Query: `query myQuery { employees { id } }`,
+				})
+				requestLog := xEnv.Observer().FilterMessage("/graphql")
+				requestLogAll := requestLog.All()
+				requestContextMap := requestLogAll[0].ContextMap()
+
+				timeToLastByte, ok := requestContextMap["time_to_last_byte"].(time.Duration)
+				require.True(t, ok)
+
+				require.Greater(t, int(timeToLastByte), 0)
+			})
+		})
+
 		t.Run("verify connAcquireDuration value is attached for multiple subgraph calls", func(t *testing.T) {
 			t.Parallel()
 
@@ -4358,6 +4422,104 @@ func TestAccessLogs(t *testing.T) {
 	t.Run("expression field logging", func(t *testing.T) {
 		t.Parallel()
 
+		t.Run("validate query complexity expressions for successful, rejected, and cached operations", func(t *testing.T) {
+			t.Parallel()
+
+			testenv.Run(t,
+				&testenv.Config{
+					AccessLogFields: []config.CustomAttribute{
+						{
+							Key: "query_depth",
+							ValueFrom: &config.CustomDynamicAttribute{
+								Expression: "request.operation.queryDepth",
+							},
+						},
+						{
+							Key: "query_total_fields",
+							ValueFrom: &config.CustomDynamicAttribute{
+								Expression: "request.operation.queryTotalFields",
+							},
+						},
+						{
+							Key: "query_root_fields",
+							ValueFrom: &config.CustomDynamicAttribute{
+								Expression: "request.operation.queryRootFields",
+							},
+						},
+						{
+							Key: "query_root_field_aliases",
+							ValueFrom: &config.CustomDynamicAttribute{
+								Expression: "request.operation.queryRootFieldAliases",
+							},
+						},
+						{
+							Key: "query_complexity_cache_hit",
+							ValueFrom: &config.CustomDynamicAttribute{
+								Expression: "request.operation.queryComplexityCacheHit",
+							},
+						},
+					},
+					LogObservation: testenv.LogObservationConfig{
+						Enabled:  true,
+						LogLevel: zapcore.InfoLevel,
+					},
+					ModifySecurityConfiguration: func(securityConfiguration *config.SecurityConfiguration) {
+						securityConfiguration.ComplexityLimits = &config.ComplexityLimits{
+							Mode: config.ComplexityLimitsModeEnforce,
+							Depth: &config.ComplexityLimit{
+								Enabled: true,
+								Limit:   3,
+							},
+						}
+						securityConfiguration.ComplexityCalculationCache = &config.ComplexityCalculationCache{
+							Enabled:   true,
+							CacheSize: 1024,
+						}
+					},
+					ModifyEngineExecutionConfiguration: func(engineExecutionConfiguration *config.EngineExecutionConfiguration) {
+						engineExecutionConfiguration.Debug.SynchronousCacheWrites = true
+					},
+				},
+				func(t *testing.T, xEnv *testenv.Environment) {
+					successfulQuery := `query {
+						first: employee(id: 1) { id details { forename surname } }
+						employee(id: 2) { id details { forename } }
+						employees { id }
+					}`
+					rejectedQuery := `query {
+						employee(id: 1) { details { pets { name } } }
+					}`
+
+					makeRequest := func(query string, expectedStatus int) {
+						t.Helper()
+						res, err := xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{Query: query})
+						require.NoError(t, err)
+						require.Equal(t, expectedStatus, res.Response.StatusCode)
+					}
+
+					makeRequest(successfulQuery, http.StatusOK)
+					makeRequest(successfulQuery, http.StatusOK)
+					makeRequest(rejectedQuery, http.StatusBadRequest)
+
+					requestLogs := xEnv.Observer().FilterMessage("/graphql").All()
+					require.Len(t, requestLogs, 3)
+
+					assertComplexityFields := func(logContext map[string]interface{}, depth, totalFields, rootFields, rootFieldAliases int64, cacheHit bool) {
+						t.Helper()
+						require.Equal(t, depth, logContext["query_depth"])
+						require.Equal(t, totalFields, logContext["query_total_fields"])
+						require.Equal(t, rootFields, logContext["query_root_fields"])
+						require.Equal(t, rootFieldAliases, logContext["query_root_field_aliases"])
+						require.Equal(t, cacheHit, logContext["query_complexity_cache_hit"])
+					}
+
+					assertComplexityFields(requestLogs[0].ContextMap(), 3, 11, 2, 1, false)
+					assertComplexityFields(requestLogs[1].ContextMap(), 3, 11, 2, 1, true)
+					assertComplexityFields(requestLogs[2].ContextMap(), 4, 4, 1, 0, false)
+				},
+			)
+		})
+
 		t.Run("validate request.operation.normalizationCacheHit expression", func(t *testing.T) {
 			t.Parallel()
 
@@ -4616,7 +4778,7 @@ func TestAccessLogs(t *testing.T) {
 					// First request with persisted operation: cache miss
 					res, err := xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{
 						OperationName: []byte(`"Employees"`),
-						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f"}}`),
+						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937"}}`),
 						Header:        map[string][]string{"graphql-client-name": {"my-client"}},
 					})
 					require.NoError(t, err)
@@ -4630,7 +4792,7 @@ func TestAccessLogs(t *testing.T) {
 					// Second request: cache hit
 					res, err = xEnv.MakeGraphQLRequest(testenv.GraphQLRequest{
 						OperationName: []byte(`"Employees"`),
-						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "dc67510fb4289672bea757e862d6b00e83db5d3cbbcfb15260601b6f29bb2b8f"}}`),
+						Extensions:    []byte(`{"persistedQuery": {"version": 1, "sha256Hash": "9015ddfadd802bb378a14e48cea51e9bf9a07c7f8a71d85c56d7b104fea84937"}}`),
 						Header:        map[string][]string{"graphql-client-name": {"my-client"}},
 					})
 					require.NoError(t, err)
