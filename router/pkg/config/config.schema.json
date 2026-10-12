@@ -3311,6 +3311,52 @@
                     "type": "boolean",
                     "description": "If enabled, the Redis cluster client is used to connect to the server.",
                     "default": false
+                  },
+                  "replay": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Replays the events a subscriber missed (e.g. while reconnecting) from Redis Streams. The events of channel X are read from the stream \"channel.X\". A subscriber resumes from the \"lastEventId\" extension of its operation, or from the Last-Event-ID request header.",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Enables replaying missed events on subscription start.",
+                        "default": false
+                      },
+                      "urls": {
+                        "type": "array",
+                        "description": "The list of URLs of the Redis holding the streams. When empty, the Redis of the provider is used.",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "cluster_enabled": {
+                        "type": "boolean",
+                        "description": "If enabled, the Redis cluster client is used to connect to the replay Redis. Ignored when urls is empty.",
+                        "default": false
+                      },
+                      "data_field": {
+                        "type": "string",
+                        "description": "The stream entry field holding the event payload.",
+                        "default": "data"
+                      },
+                      "event_id_field": {
+                        "type": "string",
+                        "description": "The top-level payload field carrying the event ID (the stream entry ID). Replayed events get it set from the entry ID. Live events must carry it so that events are not delivered twice.",
+                        "default": "eventId"
+                      },
+                      "max_events": {
+                        "type": "integer",
+                        "description": "The maximum number of missed events replayed to one subscription. Beyond it, the subscription fails with RESYNC_REQUIRED.",
+                        "default": 10000,
+                        "minimum": 1
+                      },
+                      "retention": {
+                        "type": "string",
+                        "format": "go-duration",
+                        "description": "How long events stay in the streams. Cursors older than this fail with RESYNC_REQUIRED. The period is specified as a string with a number and a unit, e.g. 15m.",
+                        "default": "15m"
+                      }
+                    }
                   }
                 }
               }

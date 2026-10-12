@@ -98,6 +98,21 @@ func (p *PubSubProvider) Publish(ctx context.Context, cfg PublishEventConfigurat
 	return hooksErr
 }
 
+// BackfillEnabled reports whether the adapter can replay missed events and is configured to.
+func (p *PubSubProvider) BackfillEnabled() bool {
+	b, ok := p.Adapter.(BackfillAdapter)
+	return ok && b.BackfillEnabled()
+}
+
+// Backfill forwards to the adapter. It returns no events if the adapter cannot replay events.
+func (p *PubSubProvider) Backfill(ctx context.Context, cfg SubscriptionEventConfiguration, cursor string) ([]StreamEvent, func(data []byte) bool, error) {
+	b, ok := p.Adapter.(BackfillAdapter)
+	if !ok {
+		return nil, nil, nil
+	}
+	return b.Backfill(ctx, cfg, cursor)
+}
+
 func (p *PubSubProvider) SetHooks(hooks Hooks) {
 	p.hooks = hooks
 }

@@ -636,12 +636,21 @@ type websocketResponseWriter struct {
 	stats           statistics.EngineStatistics
 	propagateErrors bool
 	subscriptions   *sync.Map
+	// eventID is the ID of the event being written, sent with the next flushed message.
+	eventID string
 }
 
 var (
 	_ http.ResponseWriter                = (*websocketResponseWriter)(nil)
 	_ resolve.SubscriptionResponseWriter = (*websocketResponseWriter)(nil)
+	_ resolve.SubscriptionEventIDWriter  = (*websocketResponseWriter)(nil)
 )
+
+// SetEventID sets the ID of the event written until the next Flush. It is sent as
+// extensions.eventId of the response, for the client to resume the subscription after it.
+func (rw *websocketResponseWriter) SetEventID(id string) {
+	rw.eventID = id
+}
 
 func newWebsocketResponseWriter(id string, protocol wsproto.Proto, propagateErrors bool, logger *zap.Logger, stats statistics.EngineStatistics, subscriptions *sync.Map) *websocketResponseWriter {
 	return &websocketResponseWriter{
@@ -719,10 +728,18 @@ func (rw *websocketResponseWriter) Write(data []byte) (int, error) {
 }
 
 func (rw *websocketResponseWriter) Flush() error {
+	eventID := rw.eventID
+	rw.eventID = ""
 	if rw.buf.Len() > 0 {
 		payload := rw.buf.Bytes()
 		var extensions []byte
 		var err error
+		if eventID != "" {
+			if payload, err = sjson.SetBytes(payload, "extensions.eventId", eventID); err != nil {
+				rw.buf.Reset()
+				return err
+			}
+		}
 		if len(rw.header) > 0 {
 			extensions, err = json.Marshal(map[string]any{
 				"response_headers": rw.header,

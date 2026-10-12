@@ -863,9 +863,33 @@ func (k KafkaEventSource) GetID() string {
 }
 
 type RedisEventSource struct {
-	ID             string   `yaml:"id,omitempty"`
+	ID             string                        `yaml:"id,omitempty"`
+	URLs           []string                      `yaml:"urls,omitempty"`
+	ClusterEnabled bool                          `yaml:"cluster_enabled"`
+	Replay         RedisEventReplayConfiguration `yaml:"replay,omitempty"`
+}
+
+// RedisEventReplayConfiguration enables replaying the events a subscriber missed (e.g. while
+// reconnecting) from Redis Streams. The events of channel X are read from the stream "channel.X".
+// A subscriber resumes from the "lastEventId" extension of its operation, or from the
+// Last-Event-ID request header.
+type RedisEventReplayConfiguration struct {
+	Enabled bool `yaml:"enabled"`
+	// URLs of the Redis holding the streams. When empty, the provider's pub/sub Redis
+	// (urls and cluster_enabled of the provider) is used.
 	URLs           []string `yaml:"urls,omitempty"`
 	ClusterEnabled bool     `yaml:"cluster_enabled"`
+	// DataField is the stream entry field holding the event payload.
+	DataField string `yaml:"data_field,omitempty"`
+	// EventIDField is the top-level payload field carrying the event ID (the stream entry ID).
+	// Replayed events get it set from the entry ID; live events must carry it for deduplication.
+	EventIDField string `yaml:"event_id_field,omitempty"`
+	// MaxEvents caps how many missed events one subscription replays. Beyond it the
+	// subscription fails with RESYNC_REQUIRED.
+	MaxEvents int `yaml:"max_events,omitempty"`
+	// Retention is how long events stay in the streams. Cursors older than this fail with
+	// RESYNC_REQUIRED, because the events after them may have been trimmed.
+	Retention time.Duration `yaml:"retention,omitempty"`
 }
 
 func (r RedisEventSource) GetID() string {

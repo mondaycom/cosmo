@@ -2,6 +2,8 @@ package datasource
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -146,6 +148,45 @@ func (s *subscriptionEventUpdater) runBeforeEventsDispatchHooks(events []StreamE
 			"Consider increasing events.handler.before_events_dispatch.handler_timeout or reduce handler execution time.")
 		return nil, false
 	}
+}
+
+// applyHooksForSubscription runs the hooks of the live path (BeforeEventsDispatch, then
+// OnReceiveEvents) on events meant for a single subscription, e.g. replayed events, so that
+// they are filtered and transformed exactly like live events. Unlike the live path, a failing
+// BeforeEventsDispatch hook is reported as an error instead of silently dropping the events.
+func (s *subscriptionEventUpdater) applyHooksForSubscription(subscriptionCtx context.Context, events []StreamEvent) (out []StreamEvent, err error) {
+	events, ok := s.runBeforeEventsDispatchHooks(events)
+	if !ok {
+		return nil, errors.New("BeforeEventsDispatch handler failed")
+	}
+
+	hooks := s.hooks.OnReceiveEvents.Handlers
+	if len(hooks) == 0 {
+		return events, nil
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.
+				WithOptions(zap.AddStacktrace(zapcore.ErrorLevel)).
+				Error("[Recovery from handler panic]",
+					zap.String("handler_name", "OnReceiveEvents"),
+					zap.Any("error", r),
+				)
+			out, err = nil, fmt.Errorf("%v", r)
+		}
+	}()
+
+	updaterCtx, cancel := context.WithTimeout(context.Background(), s.onReiveEventsTimeout)
+	defer cancel()
+
+	for i := range hooks {
+		events, err = hooks[i](subscriptionCtx, updaterCtx, s.subscriptionEventConfiguration, s.eventBuilder, events)
+		if err != nil {
+			return events, err
+		}
+	}
+	return events, nil
 }
 
 func (s *subscriptionEventUpdater) Complete() {

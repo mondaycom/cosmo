@@ -410,7 +410,8 @@
     "Providers": {
       "Nats": null,
       "Kafka": null,
-      "Redis": null
+      "Redis": null,
+      "Pusher": null
     },
     "SkipUnavailableProviders": true,
     "Handlers": {

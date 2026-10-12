@@ -98,9 +98,13 @@ func (c *EngineDataSourceFactory) ResolveDataSourceSubscription() (datasource.Su
 		return &MutableEvent{Data: data}
 	}
 
-	return datasource.NewPubSubSubscriptionDataSource[*SubscriptionEventConfiguration](
+	ds := datasource.NewPubSubSubscriptionDataSource[*SubscriptionEventConfiguration](
 		c.RedisAdapter, triggerHashInputFn, c.logger, eventCreateFn,
-	), nil
+	)
+	if backfill, ok := c.RedisAdapter.(datasource.BackfillAdapter); ok && backfill.BackfillEnabled() {
+		return datasource.NewBackfillPubSubSubscriptionDataSource(ds, backfill), nil
+	}
+	return ds, nil
 }
 
 // ResolveDataSourceSubscriptionInput builds the input for the subscription data source

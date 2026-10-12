@@ -834,9 +834,21 @@
           "URLs": [
             "redis://localhost:6379/11"
           ],
-          "ClusterEnabled": true
+          "ClusterEnabled": true,
+          "Replay": {
+            "Enabled": true,
+            "URLs": [
+              "redis://localhost:6379/12"
+            ],
+            "ClusterEnabled": false,
+            "DataField": "data",
+            "EventIDField": "eventId",
+            "MaxEvents": 5000,
+            "Retention": 600000000000
+          }
         }
-      ]
+      ],
+      "Pusher": null
     },
     "SkipUnavailableProviders": false,
     "Handlers": {

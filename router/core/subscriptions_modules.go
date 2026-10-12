@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/buger/jsonparser"
 	"github.com/wundergraph/cosmo/router/pkg/authentication"
 	"github.com/wundergraph/cosmo/router/pkg/pubsub/datasource"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/datasource/graphql_datasource"
@@ -624,4 +625,22 @@ func NewPubSubSubscriptionOnCreateHook(fn func(ctx SubscriptionOnCreateHandlerCo
 
 		return hookCtx.subscriptionEventConfiguration, nil
 	}
+}
+
+// resumeCursorFromRequest returns the ID of the last event a resuming subscriber received:
+// the "lastEventId" operation extension, or else the Last-Event-ID header (SSE reconnects).
+func resumeCursorFromRequest(ctx context.Context) string {
+	requestContext := getRequestContext(ctx)
+	if requestContext == nil {
+		return ""
+	}
+	if requestContext.operation != nil && len(requestContext.operation.extensions) > 0 {
+		if cursor, err := jsonparser.GetString(requestContext.operation.extensions, "lastEventId"); err == nil && cursor != "" {
+			return cursor
+		}
+	}
+	if req := requestContext.Request(); req != nil {
+		return req.Header.Get("Last-Event-ID")
+	}
+	return ""
 }

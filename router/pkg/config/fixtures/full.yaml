@@ -431,6 +431,15 @@ events:
         urls:
           - 'redis://localhost:6379/11'
         cluster_enabled: true
+        replay:
+          enabled: true
+          urls:
+            - 'redis://localhost:6379/12'
+          cluster_enabled: false
+          data_field: 'data'
+          event_id_field: 'eventId'
+          max_events: 5000
+          retention: 10m
   handlers:
     on_receive_events:
       max_concurrent_handlers: 100

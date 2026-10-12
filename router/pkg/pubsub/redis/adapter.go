@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/wundergraph/cosmo/router/pkg/metric"
 
 	rd "github.com/wundergraph/cosmo/router/internal/rediscloser"
@@ -23,6 +24,12 @@ const (
 var _ datasource.Adapter = (*ProviderAdapter)(nil)
 
 func NewProviderAdapter(ctx context.Context, logger *zap.Logger, urls []string, clusterEnabled bool, opts datasource.ProviderOpts) datasource.Adapter {
+	return NewProviderAdapterWithReplay(ctx, logger, urls, clusterEnabled, ReplayOptions{}, opts)
+}
+
+// NewProviderAdapterWithReplay creates an adapter that can also replay missed events from
+// Redis Streams (see ProviderAdapter.Backfill).
+func NewProviderAdapterWithReplay(ctx context.Context, logger *zap.Logger, urls []string, clusterEnabled bool, replay ReplayOptions, opts datasource.ProviderOpts) datasource.Adapter {
 	ctx, cancel := context.WithCancel(ctx)
 	if logger == nil {
 		logger = zap.NewNop()
@@ -43,6 +50,7 @@ func NewProviderAdapter(ctx context.Context, logger *zap.Logger, urls []string, 
 		clusterEnabled:    clusterEnabled,
 		streamMetricStore: store,
 		skipUnavailable:   opts.SkipUnavailableProviders,
+		replay:            replay.withDefaults(),
 	}
 }
 
@@ -59,6 +67,10 @@ type ProviderAdapter struct {
 	// the resilient client even if the initial connection check fails, so go-redis can
 	// reconnect on a later command and the provider recovers without a restart.
 	skipUnavailable bool
+	replay          ReplayOptions
+	// replayConn is the connection to the Redis holding the replay streams, when it differs
+	// from the pub/sub one. When nil, the streams are read through conn.
+	replayConn rd.RDCloser
 }
 
 func (p *ProviderAdapter) Startup(ctx context.Context) error {
@@ -80,7 +92,7 @@ func (p *ProviderAdapter) Startup(ctx context.Context) error {
 			// recovers without a restart once the broker is reachable. The error is still
 			// returned so the caller can log a distinct "could not connect" message.
 			p.conn = rdCloser
-			return err
+			return errors.Join(err, p.startupReplay(ctx))
 		}
 		// Strict mode: the router will abort startup, so close the client we won't keep.
 		if rdCloser != nil {
@@ -91,6 +103,33 @@ func (p *ProviderAdapter) Startup(ctx context.Context) error {
 
 	p.conn = rdCloser
 
+	return p.startupReplay(ctx)
+}
+
+// startupReplay connects to the Redis holding the replay streams, if configured separately.
+func (p *ProviderAdapter) startupReplay(ctx context.Context) error {
+	if !p.replay.Enabled || len(p.replay.URLs) == 0 {
+		return nil
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	rdCloser, err := rd.NewRedisCloser(&rd.RedisCloserOptions{
+		Logger:         p.logger,
+		URLs:           p.replay.URLs,
+		ClusterEnabled: p.replay.ClusterEnabled,
+		Context:        pingCtx,
+	})
+	if err != nil {
+		if p.skipUnavailable && rdCloser != nil {
+			p.replayConn = rdCloser
+			return fmt.Errorf("replay redis: %w", err)
+		}
+		if rdCloser != nil {
+			_ = rdCloser.Close()
+		}
+		return fmt.Errorf("replay redis: %w", err)
+	}
+	p.replayConn = rdCloser
 	return nil
 }
 
@@ -105,8 +144,12 @@ func (p *ProviderAdapter) Shutdown(ctx context.Context) error {
 	// Wait for the subscriptions to be closed
 	p.closeWg.Wait()
 
-	// Close the connection
-	return p.conn.Close()
+	// Close the connections
+	err := p.conn.Close()
+	if p.replayConn != nil {
+		err = errors.Join(err, p.replayConn.Close())
+	}
+	return err
 }
 
 func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.SubscriptionEventConfiguration, updater datasource.SubscriptionEventUpdater) error {
@@ -135,6 +178,20 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 	// match. Channels templated from field arguments are unaffected.
 	log.Debug("subscribing")
 	sub := p.conn.Subscribe(ctx, subConf.Channels...)
+
+	// With replay, the resolver reads the missed events once Subscribe returns and relies on
+	// every later event being delivered live, so wait until Redis confirmed the subscriptions.
+	var early []*redis.Message
+	if p.replay.Enabled {
+		var err error
+		early, err = awaitSubscribed(ctx, sub, len(subConf.Channels))
+		if err != nil {
+			if closeErr := sub.Close(); closeErr != nil {
+				log.Error("error closing redis subscription", zap.Error(closeErr))
+			}
+			return datasource.NewError("error subscribing to redis channels", err)
+		}
+	}
 	msgChan := sub.Channel()
 
 	cleanup := func() {
@@ -149,6 +206,10 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 		defer p.closeWg.Done()
 		defer cleanup()
 
+		for _, msg := range early {
+			p.deliver(ctx, conf, updater, log, msg)
+		}
+
 		for {
 			select {
 			case msg, ok := <-msgChan:
@@ -160,18 +221,7 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 					log.Debug("empty message received on subscription update, skipping")
 					return
 				}
-				log.Debug("subscription update", zap.String("message_channel", msg.Channel), zap.String("data", msg.Payload))
-				p.streamMetricStore.Consume(ctx, metric.StreamsEvent{
-					ProviderId:          conf.ProviderID(),
-					StreamOperationName: redisReceive,
-					ProviderType:        metric.ProviderTypeRedis,
-					DestinationName:     msg.Channel,
-				})
-				updater.Update([]datasource.StreamEvent{
-					&Event{evt: &MutableEvent{
-						Data: []byte(msg.Payload),
-					}},
-				})
+				p.deliver(ctx, conf, updater, log, msg)
 			case <-p.ctx.Done():
 				// When the application context is done, we stop the subscription if it is not already done
 				log.Debug("application context done, stopping subscription")
@@ -185,6 +235,50 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, conf datasource.Subscri
 	}()
 
 	return nil
+}
+
+func (p *ProviderAdapter) deliver(ctx context.Context, conf datasource.SubscriptionEventConfiguration, updater datasource.SubscriptionEventUpdater, log *zap.Logger, msg *redis.Message) {
+	log.Debug("subscription update", zap.String("message_channel", msg.Channel), zap.String("data", msg.Payload))
+	p.streamMetricStore.Consume(ctx, metric.StreamsEvent{
+		ProviderId:          conf.ProviderID(),
+		StreamOperationName: redisReceive,
+		ProviderType:        metric.ProviderTypeRedis,
+		DestinationName:     msg.Channel,
+	})
+	updater.Update([]datasource.StreamEvent{
+		&Event{evt: &MutableEvent{
+			Data: []byte(msg.Payload),
+		}},
+	})
+}
+
+// subscribeConfirmTimeout bounds how long Subscribe waits for Redis to confirm the subscriptions.
+const subscribeConfirmTimeout = 5 * time.Second
+
+// awaitSubscribed waits until Redis confirmed the subscription to channels channels. Messages
+// received in between are returned, so they can be delivered before the ones that follow.
+func awaitSubscribed(ctx context.Context, sub *redis.PubSub, channels int) ([]*redis.Message, error) {
+	deadline := time.Now().Add(subscribeConfirmTimeout)
+	var early []*redis.Message
+	for confirmed := 0; confirmed < channels; {
+		timeout := time.Until(deadline)
+		if timeout <= 0 {
+			return nil, errors.New("timed out waiting for the subscription confirmation")
+		}
+		msg, err := sub.ReceiveTimeout(ctx, timeout)
+		if err != nil {
+			return nil, err
+		}
+		switch m := msg.(type) {
+		case *redis.Subscription:
+			if m.Kind == "subscribe" {
+				confirmed++
+			}
+		case *redis.Message:
+			early = append(early, m)
+		}
+	}
+	return early, nil
 }
 
 func (p *ProviderAdapter) Publish(ctx context.Context, conf datasource.PublishEventConfiguration, events []datasource.StreamEvent) error {

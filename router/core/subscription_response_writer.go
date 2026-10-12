@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tidwall/sjson"
 	"github.com/wundergraph/astjson"
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/engine/resolve"
 )
@@ -44,9 +45,21 @@ type HttpFlushWriter struct {
 	// apolloSubscriptionMultipartPrintBoundary if set to true will send the multipart boundary at the end of the message to allow
 	// misbehaving client (like apollo client) to read the message just sent before the next one or the heartbeat
 	apolloSubscriptionMultipartPrintBoundary bool
+	// eventID is the ID of the event being written, sent with the next flushed message.
+	eventID string
 }
 
-var _ resolve.SubscriptionResponseWriter = (*HttpFlushWriter)(nil)
+var (
+	_ resolve.SubscriptionResponseWriter = (*HttpFlushWriter)(nil)
+	_ resolve.SubscriptionEventIDWriter  = (*HttpFlushWriter)(nil)
+)
+
+// SetEventID sets the ID of the event written until the next Flush. SSE sends it as the "id"
+// field, so clients reconnect with it in the Last-Event-ID header. Multipart sends it as
+// extensions.eventId of the response.
+func (f *HttpFlushWriter) SetEventID(id string) {
+	f.eventID = id
+}
 
 func (f *HttpFlushWriter) Complete() {
 	if f.ctx.Err() != nil {
@@ -120,13 +133,23 @@ func (f *HttpFlushWriter) Flush() (err error) {
 
 	resp := f.buf.Bytes()
 	f.buf.Reset()
+	eventID := f.eventID
+	f.eventID = ""
 
 	flushBreak := GetWriterPrefix(f.sse, f.multipart, !f.apolloSubscriptionMultipartPrintBoundary || f.firstMessage)
 	if f.firstMessage {
 		f.firstMessage = false
 	}
+	if f.sse && isValidSSEEventID(eventID) {
+		flushBreak = "event: next\nid: " + eventID + "\ndata: "
+	}
 	if f.multipart && len(resp) > 0 {
 		var err error
+		if eventID != "" {
+			if resp, err = sjson.SetBytes(resp, "extensions.eventId", eventID); err != nil {
+				return err
+			}
+		}
 		resp, err = wrapMultipartMessage(resp, true)
 		if err != nil {
 			return err
@@ -305,6 +328,12 @@ type SubscriptionParams struct {
 	UseSse        bool
 	SubscribeOnce bool
 	UseMultipart  bool
+}
+
+// isValidSSEEventID reports whether id can be sent as an SSE "id" field. The field ends at a line
+// break, and clients ignore IDs containing NUL.
+func isValidSSEEventID(id string) bool {
+	return id != "" && !strings.ContainsAny(id, "\r\n\x00")
 }
 
 func GetWriterPrefix(sse bool, multipart bool, firstMessage bool) string {

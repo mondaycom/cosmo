@@ -20,6 +20,10 @@ type BeforeEventsDispatchFn func(ctx context.Context, subConf SubscriptionEventC
 // Returning a non-nil error aborts the subscription.
 type SubscriptionOnCreateFn func(ctx context.Context, subConf SubscriptionEventConfiguration) (SubscriptionEventConfiguration, error)
 
+// ResumeCursorFn returns the ID of the last event the subscriber received, or "" for a fresh
+// subscription. ctx is the subscriber's request context.
+type ResumeCursorFn func(ctx context.Context) string
+
 // Hooks contains hooks for the pubsub providers and data sources
 type Hooks struct {
 	SubscriptionOnCreate SubscriptionOnCreateHooks
@@ -27,6 +31,8 @@ type Hooks struct {
 	OnPublishEvents      OnPublishEventsHooks
 	OnReceiveEvents      OnReceiveEventsHooks
 	BeforeEventsDispatch BeforeEventsDispatchHooks
+	// ResumeCursor tells data sources that replay missed events where a subscriber resumes.
+	ResumeCursor ResumeCursorFn
 }
 
 // SubscriptionOnCreateHooks contains hooks that run before a subscription trigger is created
